@@ -38,8 +38,6 @@ CREATE TABLE public.generated_shopping_list (
 );
 
 
-ALTER TABLE public.generated_shopping_list OWNER TO stuartbloxham;
-
 --
 -- Name: generated_shopping_list_id_seq; Type: SEQUENCE; Schema: public; Owner: stuartbloxham
 --
@@ -63,8 +61,6 @@ CREATE TABLE public.ingredients (
     name character varying(255) NOT NULL
 );
 
-
-ALTER TABLE public.ingredients OWNER TO stuartbloxham;
 
 --
 -- Name: ingredients_id_seq; Type: SEQUENCE; Schema: public; Owner: stuartbloxham
@@ -92,8 +88,6 @@ CREATE TABLE public.recipe_ingredients (
 );
 
 
-ALTER TABLE public.recipe_ingredients OWNER TO stuartbloxham;
-
 --
 -- Name: recipe_tags; Type: TABLE; Schema: public; Owner: stuartbloxham
 --
@@ -103,8 +97,6 @@ CREATE TABLE public.recipe_tags (
     recipe_id integer NOT NULL
 );
 
-
-ALTER TABLE public.recipe_tags OWNER TO stuartbloxham;
 
 --
 -- Name: recipes; Type: TABLE; Schema: public; Owner: stuartbloxham
@@ -121,8 +113,6 @@ CREATE TABLE public.recipes (
     is_on_menu boolean DEFAULT false
 );
 
-
-ALTER TABLE public.recipes OWNER TO stuartbloxham;
 
 --
 -- Name: recipes_id_seq; Type: SEQUENCE; Schema: public; Owner: stuartbloxham
@@ -149,8 +139,6 @@ CREATE TABLE public.shopping_list (
 );
 
 
-ALTER TABLE public.shopping_list OWNER TO stuartbloxham;
-
 --
 -- Name: shopping_list_id_seq; Type: SEQUENCE; Schema: public; Owner: stuartbloxham
 --
@@ -176,8 +164,6 @@ CREATE TABLE public.shopping_list_recipes (
 );
 
 
-ALTER TABLE public.shopping_list_recipes OWNER TO stuartbloxham;
-
 --
 -- Name: shopping_list_recipes_id_seq; Type: SEQUENCE; Schema: public; Owner: stuartbloxham
 --
@@ -190,8 +176,6 @@ CREATE SEQUENCE public.shopping_list_recipes_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
-ALTER SEQUENCE public.shopping_list_recipes_id_seq OWNER TO stuartbloxham;
 
 --
 -- Name: shopping_list_recipes_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: stuartbloxham
@@ -209,8 +193,6 @@ CREATE TABLE public.tags (
     name character varying(255) NOT NULL
 );
 
-
-ALTER TABLE public.tags OWNER TO stuartbloxham;
 
 --
 -- Name: tags_id_seq; Type: SEQUENCE; Schema: public; Owner: stuartbloxham
