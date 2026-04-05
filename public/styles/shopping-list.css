@@ -3,10 +3,10 @@
 .shopping__list__menu__title {
     text-transform: uppercase;
     letter-spacing: 0.03em;
-    margin-top: 4rem;
 }
 
 .shopping__list__menu {
+    padding-block: 2rem;
     display: none;
 
     &.visible {

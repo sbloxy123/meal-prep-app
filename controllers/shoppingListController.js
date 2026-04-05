@@ -57,6 +57,8 @@ async function getShoppingList(req, res, next) {
     const shoppingListIngredientsByRecipe =
         await db.getShoppingListIngredientsByRecipe();
 
+    console.log("wwwwwwww", shoppingList);
+
     // todo - add alert to when user closes recipe ingredients popup?
     // todo - set up api to pull in data from google keep?
 
