@@ -1,0 +1,68 @@
+.button__link {
+    a {
+        padding: 0.5em 1em;
+        background-color: rgba(141, 96, 96, 0.8);
+        border: 2px solid #8d6060;
+        border-radius: 4px;
+        color: #fff;
+        text-transform: uppercase;
+        text-decoration: none;
+        letter-spacing: 0.02em;
+    }
+}
+
+.tag__item {
+    position: relative;
+    padding: var(--tag-padding);
+    width: fit-content;
+    height: fit-content;
+    background-color: #fff;
+    cursor: pointer;
+    text-transform: capitalize;
+}
+
+.form__button {
+    text-transform: uppercase;
+    border-radius: 4px;
+    cursor: pointer;
+}
+.form__button__submit {
+    background-color: var(--col-green);
+}
+.form__button__edit {
+    background-color: var(--col-orange);
+}
+.form__button__cancel {
+    background-color: rgba(var(--col-light-green), 0.5);
+    background-color: color-mix(
+        in srgb,
+        var(--col-light-green) 50%,
+        transparent
+    );
+}
+.form__button__delete {
+    background-color: var(--col-warn);
+    color: #fff;
+}
+
+.ui__button {
+    padding: 0.5rem 2rem;
+    border-radius: 8px;
+    border: 2px solid var(--col-green);
+    background-color: var(--col-dark-green);
+    color: #fff;
+    font-weight: 500;
+    text-transform: uppercase;
+    cursor: pointer;
+}
+
+.ui__button__submit {
+    background-color: var(--col-light-green);
+    color: var(--col-type);
+    border: 2px solid var(--col-dark-green);
+}
+
+.ui__button__warning {
+    background-color: var(--col-warn);
+    border: 2px solid var(--col-warn);
+}

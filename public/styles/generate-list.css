@@ -1,0 +1,51 @@
+@import url("/styles/styles.css");
+
+.generated__lists {
+    margin-top: 3em;
+}
+.aisle__block {
+    padding-block: 0.5rem;
+}
+.aisle__product__list {
+}
+.aisle__product__list__item {
+    position: relative;
+    width: 100%;
+    max-width: 400px;
+    display: flex;
+    gap: 1rem;
+    border: 2px solid color-mix(in srgb, var(--col-dark-green) 50%, transparent);
+    align-items: center;
+    justify-content: space-between;
+    margin-block: 5px;
+    padding-inline: 0.7rem;
+
+    &::after {
+        position: absolute;
+        content: "";
+        top: 0;
+        right: 0;
+        bottom: 0;
+        left: 0;
+        margin: auto;
+        width: calc(100% - 10px);
+        height: 2px;
+        background-color: var(--col-type);
+        pointer-events: none;
+        display: none;
+        opacity: 0.7;
+    }
+}
+
+.aisle__product__list__item__title {
+    margin-block: 0.7rem;
+}
+.is__collected__checkbox {
+    margin-right: 0.7rem;
+}
+.aisle__product__list__item:has(.is__collected__checkbox:checked) {
+    opacity: 0.7;
+    &::after {
+        display: block;
+    }
+}

@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Recipes</title>
+        <link rel="stylesheet" href="/styles/page-home.css">
+        <script type="text/javascript" src="/js/script.js"></script>
+
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap" rel="stylesheet">
+    </head>
+    <body>
+        <div class="homepage">
+            <%- include('partials/header') %>
+            <div class="new__recipe__popout">
+                <div class="new__recipe__popout__block">
+                    <button class="close__add__recipe__popout__button">Close</button>
+                    <h1>Add a new recipe</h1>
+                    <div class="recipe__form">
+                        <form action="/recipes" method="POST" class="add__recipe__form">
+                            <div class="add__recipe__form__block">
+                                <div class="form__group">
+                                    <h3>Recipe details</h3>
+
+                                    <div class="form__field">
+                                        <label for="recipe_title">Add a title</label>
+                                        <input type="text" id="recipe_title" name="recipe_title">
+                                    </div>
+
+                                    <div class="form__field">
+                                        <label for="recipe_description">Add a description:</label>
+                                        <textarea type="text" id="recipe_description" name="recipe_description"></textarea>
+                                    </div>
+
+                                    <div class="form__field">
+                                        <label for="recipe_instructions">Add instructions:</label>
+                                        <textarea type="text" id="recipe_instructions" name="recipe_instructions"></textarea>
+                                    </div>
+
+                                    <div class="form__field">
+                                        <label for="recipe_link_url">Add a link:</label>
+                                        <input type="text" id="recipe_link_url" name="recipe_link_url">
+                                    </div>
+
+                                    <div class="form__field">
+                                        <label for="prep_time_minutes">Prep time:</label>
+                                        <input type="number" id="prep_time_minutes" name="prep_time_minutes">
+                                    </div>
+
+                                    <div class="form__field">
+                                        <label for="cook_time_minutes">Cook time:</label>
+                                        <input type="number" id="cook_time_minutes" name="cook_time_minutes">
+                                    </div>
+                                </div>
+                                <div class="form__group">
+                                    <h3>Ingredients</h3>
+                                    <ul id="ingredient__list"></ul>
+                                    <div class="ingredient__input__form">
+                                        <div class="form__field">
+                                            <label for="ingredient_name_input">Ingredient</label>
+                                            <input type="text" id="ingredient_name_input" placeholder="e.g. flour">
+                                        </div>
+                                        <div class="ingredient__inputs__measurements">
+                                            <div class="form__field">
+                                                <label for="ingredient_quantity_input">Quantity</label>
+                                                <input type="number" id="ingredient_quantity_input" placeholder="e.g. 200">
+                                            </div>
+                                            <div class="form__field">
+                                                <label for="ingredient_unit_input">Unit</label>
+                                                <input type="text" id="ingredient_unit_input" placeholder="e.g. g">
+                                            </div>
+                                        </div>
+                                        <button type="button" id="add__ingredient__button">Add ingredient</button>
+                                    </div>
+                                    <div id="ingredient__form__values"></div>
+                                </div>
+
+                                <div class="form__group">
+
+                                    <div class="collections__form__block">
+
+                                        <h3>Collections</h3>
+                                        <p>Current recipe collections:</p>
+                                        <ul id="selected__tag__list">
+                                            <!-- user-selected tags get placed in here using js -->
+                                        </ul>
+
+                                        <div class="existing__collection">
+                                            <p>Add from existing collection:</p>
+                                            <ul class="existing__collection__list">
+                                                <% allTags?.forEach(tag => { %>
+                                                    <li class="existing__collection__item">
+                                                        <button type="button" data-tag-title="<%= tag.name %>" class="existing__collection__item__button">
+                                                            <%= tag.name %></li>
+                                                        </button>
+                                                <% }) %>
+                                            </ul>
+                                        </div>
+                                        <p>Add a new collection</p>
+                                        <div class="new__colection">
+                                            <input type="text" id="collection__input">
+                                            <button type="button" id="add__collection__button">Add new collection</button>
+                                        </div>
+
+                                        <p style="opacity: 0.7;">values added to form for DB</p>
+                                        <div id="collection__form__values">
+                                            <!-- hidden input fields get placed in here using js -->
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <button class="add__recipe__submit" type="submit">Add Recipe</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            <button type="button" class="open__add__recipe__popout__button ui__button ui__button__submit">add new recipe</button>
+
+            <!-- === OUR RECIPE'S LIST === -->
+            <div class="our__recipes">
+                <h1><%= recipesPageTitle %></h1>
+
+                <div class="collections__filter">
+                    <h3>Filter by collections:</h3>
+                    <ul class="recipe__collection__filter__list reset__ul">
+                    </ul>
+                </div>
+                <ul class="recipe__list">
+                    <% recipeItems.forEach(recipe => { %>
+                        <li class="recipe__item" data-title="<%= recipe.title %>" data-is-on-menu="<%= recipe.is_on_menu %>">
+                            <ul class="single__recipe__collection__list reset__ul">
+                                <% singleRecipeTags.forEach(tag => { 
+                                    if (tag.tag_recipe_title == recipe.title){ %>
+                                    <li class="single__recipe__collection__item tag__item" data-tag-name="<%=tag.name %>"><%= tag.name %></li>
+                                <% }}) %>
+                            </ul>
+                            <div class="recipe__item__block">
+                                <h3 class="recipe__item__title"><%= recipe.title %></h3>
+                                <p class="recipe__item__description"><%= recipe.description %></p>
+
+
+                                <div class="recipe__item__buttons">
+                                    <form action="/recipes/<%= recipe.id %>" method="GET" style="display: inline;">
+                                        <button class="recipe__item__add__button reset__button form__button form__button__edit" type="submit">
+                                            View full recipe
+                                        </button>
+                                    </form>
+                                    <form action="/recipes/<%= recipe.id %>?_method=DELETE" method="POST">
+                                        <button class="recipe__item__delete__button reset__button form__button form__button__delete" type="submit" onclick="return confirm(`are you sure you want to delete the recipe for <%= recipe.title %>`)">
+                                            Delete recipe
+                                        </button>
+                                    </form>
+                                </div>
+                                <div class="ingredients__popout">
+                                    <div class="ingredients__popout__block">
+                                        <h3><%= recipe.title %></h3>
+                                        <h4>add ingredients to your pan:</h4>
+                                        <ul class="ingredients__popout__list reset__ul">
+                                            <% 
+                                                singleRecipeIngredients.map((recipeIngredientItem) => {
+                                                if (recipeIngredientItem.recipe_title == recipe.title && recipeIngredientItem.ingredient !== ""){
+                                                const isActive = shoppingListIngredientsByRecipe.some(
+                                                        item => item.recipe_id == recipe.id && item.ingredient_name == recipeIngredientItem.ingredient
+                                                    );
+                                            %> 
+                                                <li class="ingredients__popout__item">
+                                                    <button type="button" class="ingredient__button <%= isActive ? 'selected' : '' %>" title="click to add ingredient to shopping list" data-ingredient-name="<%= recipeIngredientItem.ingredient %>"><%= recipeIngredientItem.ingredient %></button>
+                                                </li> 
+                                            <% 
+                                                }
+                                                }) 
+                                            %>
+                                        </ul>
+
+                                        <form class="add__to__ingredients__form" action="/shopping-list" method="POST">
+                                            <input name="recipeId" type="hidden" value="<%= recipe.id %>">
+                                            <div class="hidden__ingredients__inputs__container">
+                                            </div>
+                                            <button class="add__ingredients__to__pan__button" type="submit">add recipe and ingredients</button>
+                                        </form>
+
+                                        <button type="button" class="close__ingredients__popup">
+                                            Close
+                                        </button>
+                                        
+                                    </div>
+                                </div>
+                                <div class="add__to__cook__list">
+                                    <% if(!recipe.is_on_menu ) { %>
+                                        <button class="add__to__cook__list__button" type="button">
+                                            Add to pan
+                                        </button>
+                                    <% } else { %>
+                                        <span class="on__menu__label">✓ On this week's menu</span>
+                                        <button class="add__to__cook__list__button" type="button">
+                                            Edit stock check
+                                        </button>
+                                        <form action="/shopping-list/recipe/<%= recipe.id %>?_method=PUT" method="POST">
+                                            <button type="submit" class="remove__from__cook__list__button">
+                                                Remove from pan
+                                            </button>
+                                        </form>
+                                    <% } %>
+                                </div>
+                            </div>
+                        </li> 
+                    <% }) %>
+                </ul>
+            </div>
+        </div>
+        <%- include('partials/footer') %>
+    </body>
+</html>

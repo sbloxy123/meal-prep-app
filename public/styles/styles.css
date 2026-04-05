@@ -1,0 +1,46 @@
+@import url("global-styles/classes.css");
+@import url("elements/header.css");
+@import url("/styles/elements/footer.css");
+@import url("elements/recipe-list.css");
+@import url("single-recipe.css");
+@import url("global-styles/templates.css");
+@import url("/styles/elements/new-recipe-popout.css");
+
+/* @import url("shopping-list.css"); */
+
+:root {
+    --col-dark-green: #4b7f52;
+    --col-green: #7dd181;
+    --col-light-green: #96e8bc;
+    --col-orange: #dfcc74;
+    --col-warn: #f72c25;
+    --col-type: #162519;
+
+    --tag-padding: 0.4rem 1rem;
+}
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+body {
+    position: relative;
+    margin: 0;
+    padding: 10rem 5vw;
+    * {
+        font-family: "Inter", sans-serif;
+        color: var(--col-type);
+    }
+
+    @media all and (min-width: 500px) {
+        padding: 7rem 5vw;
+    }
+}
+
+/* todo - move to relevant file: */
+.button__link__update {
+    a {
+        background-color: rgba(209, 140, 12, 0.8);
+    }
+}

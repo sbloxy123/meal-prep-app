@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Document</title>
+        <script type="text/javascript" src="/js/script.js"></script>
+        <link rel="stylesheet" href="/styles/styles.css">
+        <link rel="stylesheet" href="/styles/generate-list.css">
+
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap" rel="stylesheet">
+    </head>
+    
+    <body>
+        <%- include('partials/header') %>
+        <h1><%= generatedShoppingListPageTitle %></h1>
+
+        <section class="generated__list__section">
+
+            <div class="generated__lists reset__div">
+                <%
+                    productsByAisles.forEach(item => {
+                %>
+
+                    <div class="aisle__block">
+                        
+                        <h3><%= item.aisle_name %></h3>
+
+                        <ul class="aisle__product__list reset__ul">
+                            <% item.products.forEach(product => { %>
+                                <li class="aisle__product__list__item ">
+                                    
+                                    <p class="aisle__product__list__item__title"><%= product.product_name %>  
+                                        <!-- <% if (product.recipe_count > 0) {%>
+                                            <sup>appears in  <%= product.recipe_count %> recipes</sup>
+                                        <% } %> -->
+                                        
+                                        <% if (product.quantity > 1) {%>
+                                            <span>- x <%= product.quantity %></span>
+                                        <% } %>
+                                    </p>
+                                    <input class="is__collected__checkbox" type="checkbox" id="is_collected" name="is_collected" <%= product.is_collected ? 'checked' : '' %> data-item-id="<%= product.id %>">
+                                    <!-- <% if(product.is_custom_product) { %>
+                                        <p><em>cutom product</em></p>
+                                    <% } %> -->
+                                </li>
+
+                            <% }) %>
+                        </ul>
+                    </div>
+                <% }) %>
+            </ul>
+        </section>
+        <%- include('partials/footer') %>
+    </body>
+</html>

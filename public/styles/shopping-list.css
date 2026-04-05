@@ -1,0 +1,113 @@
+@import url("/styles/styles.css");
+
+.shopping__list__menu__title {
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    margin-top: 4rem;
+}
+
+.shopping__list__menu {
+    display: none;
+
+    &.visible {
+        display: block;
+    }
+}
+
+.our__recipes {
+    padding-top: 0;
+}
+
+.shopping__list__heading {
+    position: relative;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    max-width: 400px;
+
+    &::before {
+        position: absolute;
+        bottom: -6px;
+        left: 0;
+        content: "";
+        width: 90%;
+        height: 2px;
+        background-color: var(--col-type);
+    }
+}
+
+.shopping__list__recipe__ingredients {
+    padding-bottom: 1rem;
+}
+.shopping__list__custom__product__ingredients {
+    padding-bottom: 1rem;
+}
+
+/* Shopping list form items: */
+
+.shopping__list__recipe__ingredients__item {
+    width: 100%;
+    max-width: 400px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 5px;
+    padding-block: 0.3rem;
+    button {
+        cursor: pointer;
+    }
+}
+.shopping__list__item__form {
+    display: none;
+    .shopping__list__recipe__ingredients__item.active & {
+        display: flex;
+        justify-content: flex-start;
+        align-items: center;
+        gap: 5px;
+        flex-grow: 1;
+        input {
+            width: 100%;
+        }
+    }
+}
+.shopping__list__recipe__ingredient__title {
+    margin: 0;
+    width: 80%;
+    display: flex;
+    justify-content: space-between;
+    flex-grow: 1;
+    text-transform: capitalize;
+    span {
+        align-content: center;
+    }
+    .shopping__list__recipe__ingredients__item.active & {
+        display: none;
+    }
+}
+.edit__ingredient__item__button {
+}
+.shopping__list__item__delete {
+    display: inline-block;
+    button {
+    }
+
+    .shopping__list__recipe__ingredients__item.active & {
+        display: none;
+    }
+}
+
+/* add custom product form */
+.add__custom__product__form {
+    padding-block: 2rem;
+}
+
+.custom__product__form__field {
+    margin-top: 0.4rem;
+    max-width: 400px;
+    display: flex;
+    gap: 5px;
+    display: flex;
+    justify-content: space-between;
+    input {
+        flex-grow: 1;
+    }
+}

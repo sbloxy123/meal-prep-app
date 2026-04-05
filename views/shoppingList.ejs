@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Edit Recipe</title>
+        <link rel="stylesheet" href="/styles/styles.css" />
+        <link rel="stylesheet" href="/styles/shopping-list.css" />
+        <script type="text/javascript" src="/js/script.js"></script>
+
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap" rel="stylesheet">
+
+    </head>
+    <body>
+
+        <div class="shopping__list__page">
+            <%- include('partials/header') %>
+            <h1><%= shoppingListPageTitle %></h1>
+
+            <button class="open__menu__button reset__button ui__button uppercase" type="button">view menu</button>
+            
+            <div class="shopping__list__menu">
+                <h2 class="shopping__list__menu__title">This week's menu:</h2>
+                
+                <% if( allRecipesOnMenu.length > 0) { %>
+                <div class="our__recipes">
+                    <div class="collections__filter">
+                        <h3>Filter by collections:</h3>
+                        <ul class="recipe__collection__filter__list reset__ul">
+                        </ul>
+                    </div>
+                    <ul class="recipe__list">
+                        <% allRecipesOnMenu.forEach(recipe => { %>
+                            <li class="recipe__item" data-title="<%= recipe.title %>" data-is-on-menu="<%= recipe.is_on_menu %>">
+                                <ul class="single__recipe__collection__list reset__ul">
+                                    <% singleRecipeTags.forEach(tag => { 
+                                        if (tag.tag_recipe_title == recipe.title){ %>
+                                        <li class="single__recipe__collection__item tag__item" data-tag-name="<%=tag.name %>"><%= tag.name %></li>
+                                    <% }}) %>
+                                </ul>
+                                <div class="recipe__item__block">
+                                    <h3 class="recipe__item__title"><%= recipe.title %></h3>
+                                    <p class="recipe__item__description"><%= recipe.description %></p>
+
+
+                                    <div class="recipe__item__buttons">
+                                        <form action="/recipes/<%= recipe.id %>" method="GET" style="display: inline;">
+                                            <button class="recipe__item__add__button reset__button form__button form__button__edit" type="submit">
+                                                View full recipe
+                                            </button>
+                                        </form>
+                                        <form action="/recipes/<%= recipe.id %>?_method=DELETE" method="POST">
+                                            <button class="recipe__item__delete__button reset__button form__button form__button__delete" type="submit" onclick="return confirm(`are you sure you want to delete the recipe for <%= recipe.title %>`)">
+                                                Delete recipe
+                                            </button>
+                                        </form>
+                                    </div>
+                                    <div class="ingredients__popout">
+                                        <div class="ingredients__popout__block">
+                                            <h3><%= recipe.title %></h3>
+                                            <h4>add ingredients to your pan:</h4>
+                                            <ul class="ingredients__popout__list reset__ul">
+                                                <% 
+                                                    singleRecipeIngredients.map((recipeIngredientItem) => {
+                                                    if (recipeIngredientItem.recipe_title == recipe.title && recipeIngredientItem.ingredient !== ""){
+                                                    const isActive = shoppingListIngredientsByRecipe.some(
+                                                            item => item.recipe_id == recipe.id && item.ingredient_name == recipeIngredientItem.ingredient
+                                                        );
+                                                %> 
+                                                    <li class="ingredients__popout__item">
+                                                        <button type="button" class="ingredient__button <%= isActive ? 'selected' : '' %>" title="click to add ingredient to shopping list" data-ingredient-name="<%= recipeIngredientItem.ingredient %>"><%= recipeIngredientItem.ingredient %></button>
+                                                    </li> 
+                                                <% 
+                                                    }
+                                                    }) 
+                                                %>
+                                            </ul>
+
+                                            <form class="add__to__ingredients__form" action="/shopping-list" method="POST">
+                                                <input name="recipeId" type="hidden" value="<%= recipe.id %>">
+                                                <div class="hidden__ingredients__inputs__container">
+                                                </div>
+                                                <button class="add__ingredients__to__pan__button" type="submit">add recipe and ingredients</button>
+                                            </form>
+
+                                            <button type="button" class="close__ingredients__popup">
+                                                Close
+                                            </button>
+                                            
+                                        </div>
+                                    </div>
+                                    <div class="add__to__cook__list">
+                                        <% if(!recipe.is_on_menu ) { %>
+                                            <button class="add__to__cook__list__button" type="button">
+                                                Add to pan
+                                            </button>
+                                        <% } else { %>
+                                            <span class="on__menu__label">✓ On this week's menu</span>
+                                            <button class="add__to__cook__list__button" type="button">
+                                                Edit stock check
+                                            </button>
+                                            <form action="/shopping-list/recipe/<%= recipe.id %>?_method=PUT" method="POST">
+                                                <button type="submit" class="remove__from__cook__list__button">
+                                                    Remove from pan
+                                                </button>
+                                            </form>
+                                        <% } %>
+                                    </div>
+                                </div>
+                            </li> 
+                        <% }) %>
+                    </ul>
+                </div>
+            </div>
+
+            <% } else { %>
+                <h2>You dont have any recipe's in your menu</h2>
+            <% } %>
+
+            <div class="shopping__list__recipe__ingredients">
+                <h3 class="shopping__list__heading">Recipe ingredients:</h3>
+                <ul class="reset__ul">
+                    <% shoppingList.forEach((shoppingItem) => { 
+                        if (shoppingItem.ingredient_name !== null) { %>
+                        <li class="shopping__list__recipe__ingredients__item">
+
+                            <form class="shopping__list__item__form" action="/shopping-list/<%= shoppingItem.id %>?_method=PUT" method="POST">
+                                <input type="text" name="ingredient_name" value="<%= shoppingItem.ingredient_name %>">
+                                <button class="update__shopping__list__submit__button form__button form__button__submit reset__button" type="submit">done</button>
+                                <button class="cancel__edit__ingredient__item__button form__button form__button__cancel reset__button" type="button">cancel</button>
+                            </form>
+
+                            <p class="shopping__list__recipe__ingredient__title">
+                                <span><%= shoppingItem.ingredient_name %></span>
+                                <% if (shoppingItem.recipe_count > 1) { %>
+                                    <span><sup> appears in x <%= shoppingItem.recipe_count %> recipes</sup></span>
+                                <% } %>
+                                <button class="edit__ingredient__item__button form__button form__button__edit reset__button" title="edit item">✎</button>
+                            </p>
+
+                            <form class="shopping__list__item__delete" action="/shopping-list/shopping-list-item/<%= shoppingItem.id %>?_method=DELETE" method="POST" onclick="return confirm(`are you sure you want to delete <%= shoppingItem.ingredient_name %> from your shopping list?`)">
+                                <button class="form__button form__button__delete reset__button" type="submit">delete</button>
+                            </form>
+                        </li>
+                    <% }}) %>
+                </ul>
+            </div>
+
+            <div class="shopping__list__custom__product__ingredients">
+                <h3 class="shopping__list__heading">Custom shopping list additions:</h3>
+                <ul class="reset__ul">
+                    <% shoppingList.forEach(shoppingItem => { 
+                        if (shoppingItem.custom_product !== null) { %>
+                        <li class="shopping__list__recipe__ingredients__item">
+
+                            <form class="shopping__list__item__form" action="/shopping-list/custom-product/<%= shoppingItem.id %>?_method=PUT" method="POST">
+                                <input type="text" name="custom_product" value="<%= shoppingItem.custom_product %>">
+                                <button class="update__shopping__list__submit__button form__button form__button__submit reset__button" type="submit">done</button>
+                                <button class="cancel__edit__ingredient__item__button form__button form__button__cancel reset__button" type="button">cancel</button>
+                            </form>
+
+                            <p class="shopping__list__recipe__ingredient__title">
+                                <span>
+                                    <%= shoppingItem.custom_product %>
+                                </span>
+                                <button class="edit__ingredient__item__button form__button form__button__edit reset__button" title="edit item">✎</button>
+                            </p>
+
+                            <form class="shopping__list__item__delete" action="/shopping-list/shopping-list-item/<%= shoppingItem.id %>?_method=DELETE" method="POST" onclick="return confirm(`are you sure you want to delete <%= shoppingItem.ingredient_name %> from your shopping list?`)">
+                                <button class="form__button form__button__delete reset__button" type="submit">Delete</button>
+                            </form>
+
+                        </li>
+                    <% }}) %>
+                </ul>
+
+                <form action="/shopping-list/custom-product" method="POST" class="add__custom__product__form">
+                    <label for="custom_product"><h3 class="shopping__list__heading uppercase">Add to your shopping list: </h3></label>
+                    <div class="custom__product__form__field">
+                        <input type="text" id="custom_product" name="custom_product">
+                        <button type="submit" class="custom__product__form__button form__button form__button__submit reset__button">Add product</button>
+                    </div>
+                </form>
+    
+                <button id="organise__list__button" class="reset__button ui__button ui__button__submit">CREATE SHOPPING LIST!</button>
+                <div id="organised__list__output"></div>
+            </div>
+
+
+
+
+            <form action="/shopping-list?_method=DELETE" method="POST" class="delete__all__form">
+                <button type="submit" class="delete__all__button ui__button ui__button__warning reset__button" onclick="return confirm(`are you sure you want to clear your entire shopping list?`)">Clear Shopping List</button>
+            </form>
+        </div>
+        <%- include('partials/footer') %>
+
+    </body>
+</html>

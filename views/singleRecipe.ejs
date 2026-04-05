@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Edit Recipe</title>
+        <link rel="stylesheet" href="/styles/styles.css">
+
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap" rel="stylesheet">
+    </head>
+    <body>
+        <%- include('partials/header') %>
+        <div class="button__link"><a href="/">back home</a></button></div>
+
+        <h1><%= selectedRecipe.title %></h1>
+        <div class="button__link button__link__update">
+            <a href="/recipes/<%= selectedRecipe.id %>/update" class="edit__recipe__link">UPDATE RECIPE</a>
+        </div>
+        <p><strong>Description: </strong><%= selectedRecipe.description %></p>
+        <p><strong>Instructions: </strong><%= selectedRecipe.instructions %></p>
+        <p><strong>Link: </strong><a target="_blank" href="<%= selectedRecipe.link_url %>"><%= selectedRecipe.link_url %></a></p>
+        
+        <p>
+            <strong>Prep time: </strong><%= selectedRecipe.prep_time_minutes %>
+        </p>
+        
+        <p>
+            <strong>Cook time: </strong><%= selectedRecipe.cook_time_minutes %>
+        </p>
+
+        <h3>tags:</h3>
+        <ul class="tag__list">
+            <% selectedRecipe.recipe_tags.forEach(tag => { %>
+                <li class="tag__list__item"><%= tag.tag_name %></li>
+            <% }) %>
+        </ul>
+
+        <h4>Ingredients:</h4>
+        <ul>
+            <% selectedRecipe.recipe_ingredients.forEach(ingredient => { %>
+                <li><span><%= ingredient.name %></span> <span><%= ingredient.quantity %></span> <span><%= ingredient.unit %></span></li>
+            <% }) %>
+        </ul>
+        <%- include('partials/footer') %>  
+    </body>
+</html>
