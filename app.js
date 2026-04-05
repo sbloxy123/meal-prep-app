@@ -9,6 +9,7 @@ const path = require("node:path");
 const recipesRouter = require("./routes/recipesRouter");
 const shoppingListRouter = require("./routes/shoppingListRouter");
 const generatedShoppingListRouter = require("./routes/generatedShoppingListRouter");
+const initializeDatabase = require("./db/init");
 
 app.set("views", path.join(__dirname, "views"));
 app.set("view engine", "ejs");
@@ -25,9 +26,17 @@ app.use("/generated-shopping-list", generatedShoppingListRouter);
 app.get("/", (req, res) => res.redirect("/recipes"));
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, (error) => {
-    if (error) {
-        throw error;
-    }
-    console.log(`Express app listening on port ${PORT}!`);
-});
+
+initializeDatabase()
+    .then(() => {
+        app.listen(PORT, (error) => {
+            if (error) {
+                throw error;
+            }
+            console.log(`Express app listening on port ${PORT}!`);
+        });
+    })
+    .catch((error) => {
+        console.error("Failed to initialize database, server not started:", error.message);
+        process.exit(1);
+    });
