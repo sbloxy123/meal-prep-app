@@ -11,12 +11,12 @@
     gap: 1rem;
     padding: 1.2em 5vw;
 
-    background-color: #fff;
+    background-color: var(--col-bg);
     &::before {
         position: absolute;
         content: "";
         inset: 0;
-        background-color: rgba(245, 222, 179, 0.4);
+        background-color: rgba(var(--col-green--opac), 0.5);
     }
     * {
         position: relative;
@@ -35,6 +35,12 @@
     svg {
         width: 100%;
         height: 100%;
+        path {
+            fill: var(--col-bg);
+        }
+        circle {
+            fill: rgba(var(--col-green--opac), 0.5);
+        }
     }
 }
 
@@ -58,17 +64,18 @@
 }
 .menu__list__item {
     width: fit-content;
+
     a {
         padding: 0.6rem 0.6rem;
         text-decoration: underline;
         text-decoration-color: transparent;
         transition: text-decoration-color 300ms ease;
         font-size: 18px;
-
         &:hover {
             text-decoration-color: inherit;
         }
     }
     span {
+        color: var(--col-bg);
     }
 }

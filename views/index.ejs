@@ -121,7 +121,7 @@
 
             <!-- === OUR RECIPE'S LIST === -->
             <div class="our__recipes">
-                <h1><%= recipesPageTitle %></h1>
+                <h1 class="page__heading"><%= recipesPageTitle %></h1>
 
                 <div class="collections__filter">
                     <h3>Filter by collections:</h3>
@@ -157,7 +157,7 @@
                                 <div class="ingredients__popout">
                                     <div class="ingredients__popout__block">
                                         <h3><%= recipe.title %></h3>
-                                        <h4>add ingredients to your pan:</h4>
+                                        <p>add ingredients to your pan:</p>
                                         <ul class="ingredients__popout__list reset__ul">
                                             <% 
                                                 singleRecipeIngredients.map((recipeIngredientItem) => {
@@ -183,7 +183,7 @@
                                         </form>
 
                                         <button type="button" class="close__ingredients__popup">
-                                            Close
+                                            ｘ
                                         </button>
                                         
                                     </div>

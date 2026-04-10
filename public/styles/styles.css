@@ -10,11 +10,25 @@
 
 :root {
     --col-dark-green: #4b7f52;
+    --col-dark-green--opac: 75, 127, 82;
+
     --col-green: #7dd181;
+    --col-green--opac: 125, 209, 129;
+
     --col-light-green: #96e8bc;
+    --col-light-green--opac: 150, 232, 188;
+
     --col-orange: #dfcc74;
+    --col-orange--opac: 223, 204, 116;
+
     --col-warn: #f72c25;
-    --col-type: #162519;
+    --col-warn--opac: 247, 44, 37;
+
+    --col-type: #e9f8eb;
+    --col-type--opac: rgba(233, 248, 235, 1);
+
+    --col-bg: #162519;
+    --col-bg--opac: 22, 37, 25;
 
     --tag-padding: 0.4rem 1rem;
 }
@@ -27,15 +41,23 @@
 body {
     position: relative;
     margin: 0;
-    padding: 10rem 5vw;
+    padding: 7rem 5vw;
+    background-color: var(--col-bg);
     * {
         font-family: "Inter", sans-serif;
         color: var(--col-type);
+    }
+    button {
+        color: var(--col-bg);
     }
 
     @media all and (min-width: 500px) {
         padding: 7rem 5vw;
     }
+}
+
+.page__heading {
+    margin-top: 0;
 }
 
 /* todo - move to relevant file: */

@@ -17,9 +17,9 @@
 
         <div class="shopping__list__page">
             <%- include('partials/header') %>
-            <h1><%= shoppingListPageTitle %></h1>
+            <h1 class="page__heading"><%= shoppingListPageTitle %></h1>
 
-            <button class="open__menu__button reset__button ui__button uppercase" type="button">view menu</button>
+            <button class="open__menu__button reset__button ui__button uppercase" type="button">view chosen recipes</button>
             
             <div class="shopping__list__menu">
                 <h2 class="shopping__list__menu__title">This week's menu:</h2>
@@ -60,7 +60,7 @@
                                     <div class="ingredients__popout">
                                         <div class="ingredients__popout__block">
                                             <h3><%= recipe.title %></h3>
-                                            <h4>add ingredients to your pan:</h4>
+                                            <p>add ingredients to your pan:</p>
                                             <ul class="ingredients__popout__list reset__ul">
                                                 <% 
                                                     singleRecipeIngredients.map((recipeIngredientItem) => {
@@ -86,7 +86,7 @@
                                             </form>
 
                                             <button type="button" class="close__ingredients__popup">
-                                                Close
+                                            ｘ
                                             </button>
                                             
                                         </div>

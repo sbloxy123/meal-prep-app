@@ -57,8 +57,6 @@ async function getShoppingList(req, res, next) {
     const shoppingListIngredientsByRecipe =
         await db.getShoppingListIngredientsByRecipe();
 
-    console.log("wwwwwwww", shoppingList);
-
     // todo - add alert to when user closes recipe ingredients popup?
     // todo - set up api to pull in data from google keep?
 
@@ -180,7 +178,6 @@ async function removeRecipeFromShoppingList(req, res, next) {
         await db.removeRecipeFromShoppingList(recipeId);
         res.redirect("/");
         // todo - change this redirect to /shopping-list if user is updating on shopping list page. see below note.
-        // ^ maybe I need to move the shopping list to homepage so it acts more like a single page application = some functionality will be easier to handle + more intuative.
     } catch (error) {
         console.error(error);
         next(error);

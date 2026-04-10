@@ -17,6 +17,7 @@
     width: fit-content;
     height: fit-content;
     background-color: #fff;
+    color: var(--col-bg);
     cursor: pointer;
     text-transform: capitalize;
 }

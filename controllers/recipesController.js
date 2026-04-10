@@ -136,12 +136,6 @@ async function updateRecipe(req, res, next) {
             ingredient_unit: [].concat(req.body.ingredient_unit || []),
             tags: [].concat(req.body.tags || []),
         };
-        // update recipes todos
-        // form fields are now getting populated
-        // todo - figure out how to update tags & ingredients
-        // ingredients - update this to show like tags??
-        // add 'back to home' button to update recipe form.
-        // update submit button title
 
         const result = recipeSchema.safeParse(formData);
 

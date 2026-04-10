@@ -1,10 +1,10 @@
 .our__recipes {
-    padding-block: 2rem;
+    padding-block: 1rem;
     /* padding-inline: clamp(0.5rem, 3vw, 2rem); */
 }
 
 .collections__filter {
-    background-color: rgba(255, 99, 71, 0.2);
+    background-color: rgba(var(--col-green--opac), 0.15);
     padding: 1.4rem 1.4rem;
     h3 {
         margin: 0 0 1rem;
@@ -17,18 +17,20 @@
     gap: 2rem;
     list-style: none;
     padding: 0;
+    margin-top: 2rem;
 }
 .recipe__item {
     position: relative;
-    border: 2px solid rgba(26, 17, 93, 0.8);
+    border: 2px solid rgba(var(--col-light-green--opac), 0.5);
     border-radius: 8px;
     box-shadow: 10px 10px 5px rgba(0, 0, 0, 0.15);
     width: clamp(320px, 30%, 340px);
     flex-grow: 1;
     overflow: hidden;
-    background-color: rgba(69, 71, 136, 0.1);
+    background-color: rgba(var(--col-light-green--opac), 0.1);
     &[data-is-on-menu="true"] {
-        background-color: rgba(62, 187, 62, 0.3);
+        background-color: rgba(var(--col-orange--opac), 0.2);
+        border: 2px solid rgba(var(--col-orange--opac), 0.7);
     }
 
     @media all and (min-width: 650px) {
@@ -50,6 +52,7 @@
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
+    margin-bottom: 3rem;
 }
 .single__recipe__collection__list {
     padding: 0.3rem;
@@ -109,7 +112,6 @@
 /* === ADD RECIPE & INGREDIENTS TO SHOPPING LIST === */
 .add__to__cook__list {
     margin: 0.7rem auto 0;
-    max-width: 300px;
     display: flex;
     flex-direction: column;
     gap: 0.3rem;
@@ -130,7 +132,8 @@
 .ingredients__popout {
     position: absolute;
     inset: 0;
-    background-color: rgba(7, 7, 7, 0.8);
+    background-color: rgba(var(--col-bg--opac), 0.85);
+    backdrop-filter: blur(2px);
     padding: 1rem;
     width: 100%;
     height: 100%;
@@ -158,10 +161,25 @@
     border: 1px dashed #fff;
     color: rgb(255, 255, 255, 0.8);
     cursor: pointer;
+    text-transform: capitalize;
+    transition:
+        background-color 400ms ease,
+        border-color 400ms ease;
+
+    &:hover {
+        background-color: rgba(var(--col-type--opac), 0.4);
+        border-color: var(--col-green);
+    }
+
     &.selected {
-        border: 1px solid #fff;
-        background-color: #fff;
-        color: #000;
+        border: 1px solid var(--col-type);
+        background-color: var(--col-type);
+        color: var(--col-bg);
+        &:hover {
+            background-color: rgba(var(--col-type--opac), 0.9);
+            border-color: var(--col-green);
+            color: var(--col-type);
+        }
     }
 }
 .add__ingredients__to__pan__button {
@@ -176,4 +194,14 @@
     position: absolute;
     top: 0.5rem;
     right: 0.5rem;
+    background: transparent;
+    color: var(--type);
+    font-size: 2rem;
+    line-height: 1;
+    border: 0px solid transparent;
+    cursor: pointer;
+    transition: transform 300ms ease;
+    &:hover {
+        transform: scale(1.15);
+    }
 }

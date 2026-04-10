@@ -18,6 +18,7 @@
     min-height: 45px;
     display: flex;
     justify-content: space-between;
+    background-color: var(--col-bg);
 }
 .footer__nav__list__item {
     width: calc(100% / 3);
@@ -39,18 +40,13 @@
         }
     }
     &:nth-child(1) {
-        background-color: var(--col-dark-green);
-        /* svg {
-            path {
-                stroke: #fff;
-            }
-        } */
+        background-color: rgba(var(--col-dark-green--opac), 0.3);
     }
     &:nth-child(2) {
-        background-color: var(--col-green);
+        background-color: rgba(var(--col-green--opac), 0.3);
     }
     &:nth-child(3) {
-        background-color: var(--col-light-green);
+        background-color: rgba(var(--col-light-green--opac), 0.3);
     }
 }
 
