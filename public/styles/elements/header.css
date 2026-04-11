@@ -36,7 +36,7 @@
         width: 100%;
         height: 100%;
         path {
-            fill: var(--col-bg);
+            fill: var(--col-type);
         }
         circle {
             fill: rgba(var(--col-green--opac), 0.5);
@@ -76,6 +76,6 @@
         }
     }
     span {
-        color: var(--col-bg);
+        color: var(--col-type);
     }
 }
