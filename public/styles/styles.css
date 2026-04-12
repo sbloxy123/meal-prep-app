@@ -27,9 +27,10 @@
     --col-type: #e9f8eb;
     --col-type--opac: rgba(233, 248, 235, 1);
 
-    --col-bg: #162519;
+    --col-bg: #101a12;
     --col-bg--opac: 22, 37, 25;
 
+    --form-field-bg: rgba(var(--col-green--opac), 0.3);
     --tag-padding: 0.4rem 1rem;
 }
 *,
@@ -54,6 +55,17 @@ body {
     @media all and (min-width: 500px) {
         padding: 7rem 5vw;
     }
+}
+
+input[type="text"],
+input[type="number"],
+textarea[type="text"] {
+    background-color: var(--form-field-bg);
+    color: var(--col-type);
+    border: 0px;
+    padding-block: 0.5rem;
+    padding-left: 0.5rem;
+    border-radius: 4px;
 }
 
 .page__heading {

@@ -6,7 +6,8 @@
     margin-left: auto;
     width: fit-content;
     padding: 0.5rem;
-    background-color: rgba(71, 172, 71, 0.5);
+    background-color: rgba(var(--col-light-green--opac), 0.8);
+    color: var(--col-bg);
     text-transform: uppercase;
     cursor: pointer;
 }
@@ -15,8 +16,8 @@
     top: 0;
     right: 0;
     padding: 0.5rem;
-    background-color: rgba(20, 48, 104, 0.8);
-    color: #fff;
+    background-color: rgba(var(--col-light-green--opac), 0.8);
+    color: var(--col-bg);
     text-transform: uppercase;
     margin-top: 7rem;
     margin-right: 2rem;

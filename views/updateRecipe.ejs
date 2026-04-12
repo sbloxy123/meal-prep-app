@@ -79,7 +79,7 @@
                                     <input type="text" id="ingredient_unit_input" placeholder="e.g. g">
                                 </div>
                             </div>
-                            <button type="button" id="add__ingredient__button">Add ingredient</button>
+                            <button type="button" id="add__ingredient__button" class="ui__button">Add ingredient</button>
                         </div>
                         <div id="ingredient__form__values"></div>
                     </div>
@@ -113,17 +113,15 @@
                             <p>Add a new collection</p>
                             <div class="new__colection">
                                 <input type="text" id="collection__input">
-                                <button type="button" id="add__collection__button">Add new collection</button>
+                                <button type="button" id="add__collection__button" class="ui__button ui__button__submit">Add new collection</button>
                             </div>
-
-                            <p style="opacity: 0.7;">values added to form for DB</p>
                             <div id="collection__form__values">
                                 <!-- hidden input fields get placed in here using js -->
                             </div>
                         </div>
                     </div>
                 </div>
-                <button class="add__recipe__submit" type="submit">Add Recipe</button>
+                <button class="add__recipe__submit ui__button ui__button__submit" type="submit">Add Recipe</button>
             </form>
         </div>
         <%- include('partials/footer') %>

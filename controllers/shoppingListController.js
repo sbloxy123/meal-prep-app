@@ -62,7 +62,7 @@ async function getShoppingList(req, res, next) {
 
     try {
         res.render("shoppingList", {
-            shoppingListPageTitle: "Shopping List",
+            shoppingListPageTitle: "Shopping Items",
             shoppingList: shoppingList,
             allRecipesOnMenu: allRecipesOnMenu,
             singleRecipeIngredients: singleRecipeIngredients,

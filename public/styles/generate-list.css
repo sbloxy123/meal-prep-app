@@ -42,6 +42,7 @@
 }
 .is__collected__checkbox {
     margin-right: 0.7rem;
+    zoom: 1.5;
 }
 .aisle__product__list__item:has(.is__collected__checkbox:checked) {
     opacity: 0.7;

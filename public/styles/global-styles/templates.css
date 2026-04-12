@@ -26,12 +26,13 @@
     text-transform: uppercase;
     border-radius: 4px;
     cursor: pointer;
+    svg {
+        width: 14px;
+        color: inherit;
+    }
 }
 .form__button__submit {
     background-color: var(--col-green);
-}
-.form__button__edit {
-    background-color: var(--col-orange);
 }
 .form__button__cancel {
     background-color: rgba(var(--col-light-green), 0.5);
@@ -40,10 +41,22 @@
         var(--col-light-green) 50%,
         transparent
     );
+    color: var(--col-type);
+}
+
+.form__button__edit {
+    background-color: var(--col-orange);
+    color: var(--col-bg);
+    svg {
+        fill: transparent;
+        path {
+            stroke: var(--col-bg);
+        }
+    }
 }
 .form__button__delete {
     background-color: var(--col-warn);
-    color: #fff;
+    color: var(--col-type);
 }
 
 .ui__button {
@@ -59,7 +72,7 @@
 
 .ui__button__submit {
     background-color: var(--col-light-green);
-    color: var(--col-type);
+    color: var(--col-bg);
     border: 2px solid var(--col-dark-green);
 }
 

@@ -86,6 +86,10 @@
 .collections__form__block {
     padding: 2rem;
     background-color: rgba(158, 210, 81, 0.2);
+    margin-bottom: 3rem;
+}
+.collections__form__block__title {
+    margin-top: 0;
 }
 .recipe__collection__filter__list {
     display: flex;
@@ -166,20 +170,20 @@
         background-color 400ms ease,
         border-color 400ms ease;
 
-    &:hover {
+    /* &:hover {
         background-color: rgba(var(--col-type--opac), 0.4);
         border-color: var(--col-green);
-    }
+    } */
 
     &.selected {
         border: 1px solid var(--col-type);
         background-color: var(--col-type);
         color: var(--col-bg);
-        &:hover {
+        /* &:hover {
             background-color: rgba(var(--col-type--opac), 0.9);
             border-color: var(--col-green);
             color: var(--col-type);
-        }
+        } */
     }
 }
 .add__ingredients__to__pan__button {
