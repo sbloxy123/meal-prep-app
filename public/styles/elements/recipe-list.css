@@ -11,6 +11,16 @@
     }
 }
 
+.layout__toggle__button {
+    margin-top: 1rem;
+    display: flex;
+    gap: 0.8rem;
+    width: fit-content;
+    svg {
+        width: 14px;
+    }
+}
+
 .recipe__list {
     display: flex;
     flex-wrap: wrap;
@@ -53,6 +63,10 @@
     -webkit-box-orient: vertical;
     overflow: hidden;
     margin-bottom: 3rem;
+
+    .recipe__list.layout__1 & {
+        display: none;
+    }
 }
 .single__recipe__collection__list {
     padding: 0.3rem;
@@ -84,7 +98,8 @@
 
 /* FILTERING */
 .collections__form__block {
-    padding: 2rem;
+    padding: 2rem 5vw;
+    padding-inline: clamp(1rem, 5vw, 2rem);
     background-color: rgba(158, 210, 81, 0.2);
     margin-bottom: 3rem;
 }

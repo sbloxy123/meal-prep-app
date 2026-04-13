@@ -19,7 +19,7 @@
     width: 100%;
     height: 100%;
     background-color: var(--col-bg);
-    padding: 7rem 2rem;
+    padding: 9rem 5vw;
     overflow: auto;
 }
 
@@ -144,11 +144,17 @@
 }
 
 .new__colection {
-    margin-top: 2rem;
+    display: flex;
+    gap: 5px;
+    flex-wrap: wrap;
 }
 
+p.new__collections__add__title {
+    margin-top: 2rem;
+    margin-bottom: 0.5rem;
+}
 #collection__input {
-    border: 2px solid rgba(var(--col-bg--opac), 0.5);
+    flex-grow: 1;
 }
 
 .add__recipe__submit {

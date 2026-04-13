@@ -14,7 +14,7 @@
     </head>
     <body>
         <%- include('partials/header') %>
-        <h1>Update recipe - <%= selectedRecipe.title %></h1>
+        <h1><%= selectedRecipe.title %> <span><em>(Update recipe)</em></span></h1> 
 
 
         <div class="recipe__form">
@@ -110,7 +110,7 @@
                                     <% }) %>
                                 </ul>
                             </div>
-                            <p>Add a new collection</p>
+                            <p class="new__collections__add__title">Add a new collection:</p>
                             <div class="new__colection">
                                 <input type="text" id="collection__input">
                                 <button type="button" id="add__collection__button" class="ui__button ui__button__submit">Add new collection</button>

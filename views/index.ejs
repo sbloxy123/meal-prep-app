@@ -11,6 +11,7 @@
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
         <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap" rel="stylesheet">
     </head>
+    
     <body>
         <div class="homepage">
             <%- include('partials/header') %>
@@ -98,7 +99,7 @@
                                                 <% }) %>
                                             </ul>
                                         </div>
-                                        <p>Add a new collection</p>
+                                        <p class="new__collections__add__title">Add a new collection:</p>
                                         <div class="new__colection">
                                             <input type="text" id="collection__input">
                                             <button type="button" id="add__collection__button" class="ui__button ui__button__submit">Add new collection</button>
@@ -126,6 +127,14 @@
                     <ul class="recipe__collection__filter__list reset__ul">
                     </ul>
                 </div>
+
+                <button class="layout__toggle__button reset__button ui__button ui__button__update">
+                    <span>Toggle Layout</span>
+                    <svg viewBox="0 0 33 33" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M1.25 11.25H31.25M11.25 31.25V11.25M4.58333 1.25H27.9167C29.7576 1.25 31.25 2.74238 31.25 4.58333V27.9167C31.25 29.7576 29.7576 31.25 27.9167 31.25H4.58333C2.74238 31.25 1.25 29.7576 1.25 27.9167V4.58333C1.25 2.74238 2.74238 1.25 4.58333 1.25Z" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </button>
+
                 <ul class="recipe__list">
                     <% recipeItems.forEach(recipe => { %>
                         <li class="recipe__item" data-title="<%= recipe.title %>" data-is-on-menu="<%= recipe.is_on_menu %>">

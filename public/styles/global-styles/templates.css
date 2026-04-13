@@ -80,3 +80,15 @@
     background-color: var(--col-warn);
     border: 2px solid var(--col-warn);
 }
+.ui__button__update {
+    background-color: var(--col-orange);
+    span {
+        color: var(--col-bg);
+    }
+    svg {
+        fill: transparent;
+        path {
+            stroke: var(--col-bg);
+        }
+    }
+}

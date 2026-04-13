@@ -350,6 +350,21 @@ function scripts() {
         });
     }
 
+    // toggle recipe list layout
+    const toggleLayoutButton = document.querySelector(
+        ".layout__toggle__button",
+    );
+    const recipeList = document.querySelector(".recipe__list");
+    toggleLayoutButton.addEventListener("click", function () {
+        if (recipeList.classList.contains("layout__1")) {
+            recipeList.classList.add("layout__2");
+            recipeList.classList.remove("layout__1");
+        } else {
+            recipeList.classList.add("layout__1");
+            recipeList.classList.remove("layout__2");
+        }
+    });
+
     // ==== ADD RECIPE & INGREDIENTS TO SHOPPING LIST ==== //
 
     // open / close popup -- styling
