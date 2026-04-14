@@ -29,26 +29,12 @@ async function createSingleTag(tagTitle) {
 
 async function createSingleIngredient(ingredient) {
     const { rows } = await pool.query(
-        "SELECT * FROM ingredients WHERE name = $1",
+        `INSERT INTO ingredients (name) VALUES ($1)
+         ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+         RETURNING id`,
         [ingredient],
     );
-    if (rows.length > 0) {
-        return rows[0].id;
-    } else {
-        try {
-            await pool.query("INSERT INTO ingredients (name) VALUES ($1)", [
-                ingredient,
-            ]);
-
-            const { rows } = await pool.query(
-                "SELECT * FROM ingredients WHERE name = $1",
-                [ingredient],
-            );
-            return rows[0].id;
-        } catch (error) {
-            console.error(error);
-        }
-    }
+    return rows[0].id;
 }
 
 async function createRecipe(data) {

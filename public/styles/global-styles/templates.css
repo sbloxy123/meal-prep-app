@@ -32,6 +32,7 @@
     text-transform: uppercase;
     border-radius: 4px;
     cursor: pointer;
+    font-size: 14px;
     svg {
         width: 14px;
         color: inherit;
