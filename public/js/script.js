@@ -354,16 +354,20 @@ function scripts() {
     const toggleLayoutButton = document.querySelector(
         ".layout__toggle__button",
     );
-    const recipeList = document.querySelector(".recipe__list");
-    toggleLayoutButton.addEventListener("click", function () {
-        if (recipeList.classList.contains("layout__1")) {
-            recipeList.classList.add("layout__2");
-            recipeList.classList.remove("layout__1");
-        } else {
-            recipeList.classList.add("layout__1");
-            recipeList.classList.remove("layout__2");
-        }
-    });
+
+    if (toggleLayoutButton) {
+        const recipeList = document.querySelector(".recipe__list");
+
+        toggleLayoutButton.addEventListener("click", function () {
+            if (recipeList.classList.contains("layout__1")) {
+                recipeList.classList.add("layout__2");
+                recipeList.classList.remove("layout__1");
+            } else {
+                recipeList.classList.add("layout__1");
+                recipeList.classList.remove("layout__2");
+            }
+        });
+    }
 
     // ==== ADD RECIPE & INGREDIENTS TO SHOPPING LIST ==== //
 
@@ -431,6 +435,8 @@ function scripts() {
 
     // get shopping list by aisles:
     const organiseButton = document.querySelector("#organise__list__button");
+
+    console.log("helo from generate button");
 
     organiseButton &&
         organiseButton.addEventListener("click", async () => {

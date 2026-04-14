@@ -31,7 +31,7 @@
                         <ul class="recipe__collection__filter__list reset__ul">
                         </ul>
                     </div>
-                    
+
                     <button class="layout__toggle__button reset__button ui__button ui__button__update">
                         <span>Toggle Layout</span>
                         <svg viewBox="0 0 33 33" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -223,6 +223,12 @@
 
                 <% } %>
 
+
+
+                <form action="/shopping-list?_method=DELETE" method="POST" class="delete__all__form">
+                    <button type="submit" class="delete__all__button ui__button ui__button__warning reset__button" onclick="return confirm(`are you sure you want to clear your entire shopping list?`)">Clear Shopping List</button>
+                </form>
+
                 <form action="/shopping-list/custom-product" method="POST" class="add__custom__product__form">
                     <label for="custom_product"><h3 class="shopping__list__heading uppercase">Add extra items to your shopping: </h3></label>
                     <div class="custom__product__form__field">
@@ -231,16 +237,9 @@
                     </div>
                 </form>
     
-                <button id="organise__list__button" class="reset__button ui__button ui__button__submit">CREATE SHOPPING LIST!</button>
+                <button id="organise__list__button" class="reset__button ui__button ui__button__submit">GENERATE SHOPPING LIST!</button>
                 <div id="organised__list__output"></div>
             </div>
-
-
-
-
-            <form action="/shopping-list?_method=DELETE" method="POST" class="delete__all__form">
-                <button type="submit" class="delete__all__button ui__button ui__button__warning reset__button" onclick="return confirm(`are you sure you want to clear your entire shopping list?`)">Clear Shopping List</button>
-            </form>
         </div>
         <%- include('partials/footer') %>
 

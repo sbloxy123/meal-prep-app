@@ -16,10 +16,16 @@
     padding: var(--tag-padding);
     width: fit-content;
     height: fit-content;
-    background-color: #fff;
+    background-color: rgba(var(--col-type--opac), 0.8);
     color: var(--col-bg);
     cursor: pointer;
     text-transform: capitalize;
+
+    &.single__recipe__collection__item {
+        background-color: rgba(var(--col-type--opac), 0.2);
+        color: var(--col-type);
+        padding: 0.2rem 0.5rem;
+    }
 }
 
 .form__button {
