@@ -9,9 +9,9 @@
     justify-content: center;
     align-items: center;
     gap: 1rem;
-    padding: 1.2em 5vw;
-
+    padding: 0.7em 5vw;
     background-color: var(--col-bg);
+
     &::before {
         position: absolute;
         content: "";
@@ -24,6 +24,7 @@
     }
 
     @media all and (min-width: 950px) {
+        padding: 1.2em 5vw;
         justify-content: space-between;
     }
 }
