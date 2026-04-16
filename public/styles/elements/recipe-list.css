@@ -13,7 +13,7 @@
 }
 
 .layout__toggle__button {
-    margin-top: 1rem;
+    margin-top: 1.6rem;
     display: flex;
     gap: 0.8rem;
     width: fit-content;
@@ -86,10 +86,10 @@
     width: 100%;
     height: 60px;
     overflow: auto;
-    .recipe__list.layout__2 &,
+    /* .recipe__list.layout__2 &,
     .recipe__list.layout__3 & {
         height: 30px;
-    }
+    } */
 }
 .single__recipe__collection__item {
     /* see .tag__item */

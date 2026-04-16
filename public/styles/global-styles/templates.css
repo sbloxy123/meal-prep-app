@@ -25,6 +25,7 @@
         background-color: rgba(var(--col-type--opac), 0.2);
         color: var(--col-type);
         padding: 0.2rem 0.5rem;
+        white-space: nowrap;
     }
 }
 
