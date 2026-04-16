@@ -357,15 +357,15 @@ function scripts() {
 
     if (toggleLayoutButton) {
         const recipeList = document.querySelector(".recipe__list");
+        const layouts = ["layout__1", "layout__2", "layout__3"];
 
         toggleLayoutButton.addEventListener("click", function () {
-            if (recipeList.classList.contains("layout__1")) {
-                recipeList.classList.add("layout__2");
-                recipeList.classList.remove("layout__1");
-            } else {
-                recipeList.classList.add("layout__1");
-                recipeList.classList.remove("layout__2");
-            }
+            const current = layouts.findIndex((l) =>
+                recipeList.classList.contains(l),
+            );
+            const next = (current + 1) % layouts.length;
+            layouts.forEach((l) => recipeList.classList.remove(l));
+            recipeList.classList.add(layouts[next]);
         });
     }
 

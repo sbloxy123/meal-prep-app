@@ -75,6 +75,7 @@
     font-weight: 500;
     text-transform: uppercase;
     cursor: pointer;
+    width: fit-content;
 }
 
 .ui__button__submit {
@@ -86,9 +87,12 @@
 .ui__button__warning {
     background-color: var(--col-warn);
     border: 2px solid var(--col-warn);
+    border: 2px solid color-mix(in srgb, var(--col-warn), #000);
 }
 .ui__button__update {
     background-color: var(--col-orange);
+    color: var(--col-bg);
+    border: 2px solid color-mix(in srgb, var(--col-orange), #000);
     span {
         color: var(--col-bg);
     }

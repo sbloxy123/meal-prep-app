@@ -57,7 +57,6 @@ async function getShoppingList(req, res, next) {
     const shoppingListIngredientsByRecipe =
         await db.getShoppingListIngredientsByRecipe();
 
-    // todo - add alert to when user closes recipe ingredients popup?
     // todo - set up api to pull in data from google keep?
 
     try {
@@ -206,7 +205,9 @@ async function organiseShoppingList(req, res, next) {
                     content: `You are a helpful shopping assistant.
                         Organise the following shopping list into UK supermarket aisles.
                         If the recipe's recipe_count is 0, mark is_custom_produt to true
-                        Return ONLY valid raw JSON with no other text, or wrapping in markdown code fences or backticks. If the item has additional text such as 'x3' or 'x 4' etc, please use your initiative and add it to the quantity property. Use quantity of 1 if nothing is specified. If an item appears for both is_custom_product: true AND false, please just update the existing item.quantity by the relevant amount. Please use exactly this structure:
+                        Return ONLY valid raw JSON with no other text, or wrapping in markdown code fences or backticks. If the item has additional text such as 'x3' or 'x 4' etc, please use your initiative and add it to the quantity property. Use quantity of 1 if nothing is specified. If an item appears for both is_custom_product: true AND false, please just update the existing item.quantity by the relevant amount.
+                        If an item is a herb plant, put it in the fresh produce supermarket aisle.
+                        Please use exactly this structure:
                         {
                             items: [
                                 "product" : "string",

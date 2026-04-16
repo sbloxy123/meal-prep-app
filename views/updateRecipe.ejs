@@ -122,6 +122,11 @@
                     </div>
                 </div>
                 <button class="add__recipe__submit ui__button ui__button__submit" type="submit">Add Recipe</button>
+                <form action="/recipes/<%= selectedRecipe.id %>?_method=DELETE" method="POST">
+                    <button class="recipe__item__delete__button reset__button ui__button ui__button__warning" type="submit" onclick="return confirm(`are you sure you want to delete the recipe for <%= selectedRecipe.title %>`)">
+                        Delete recipe
+                    </button>
+                </form>
             </form>
         </div>
         <%- include('partials/footer') %>

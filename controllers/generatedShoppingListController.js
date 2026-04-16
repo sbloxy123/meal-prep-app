@@ -3,7 +3,7 @@ const db = require("../db/queries");
 async function getGeneratedShoppingList(req, res, next) {
     try {
         const generatedShoppingItems = await db.getGeneratedShoppingListItems();
-        console.log(generatedShoppingItems);
+        // console.log(generatedShoppingItems);
 
         const generatedAisles = Array.from(
             new Set(
@@ -29,9 +29,7 @@ async function getGeneratedShoppingList(req, res, next) {
                 products: aisle_products,
             });
         });
-        console.log(productsByAisles);
-
-        // todo - put ingredients into aisle sets to show in front end
+        // console.log(productsByAisles);
 
         res.render("generatedShoppingList", {
             generatedShoppingListPageTitle: "Organised list",
