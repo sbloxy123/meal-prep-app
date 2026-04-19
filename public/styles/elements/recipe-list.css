@@ -7,6 +7,7 @@
     max-width: 750px;
     background-color: rgba(var(--col-green--opac), 0.15);
     padding: 1.4rem 1.4rem;
+    border-radius: 8px;
     h3 {
         margin: 0 0 1rem;
     }
@@ -25,7 +26,7 @@
 .recipe__list {
     display: flex;
     flex-wrap: wrap;
-    gap: 2rem;
+    gap: 1rem;
     list-style: none;
     padding: 0;
     margin-top: 2rem;
@@ -93,6 +94,7 @@
 }
 .single__recipe__collection__item {
     /* see .tag__item */
+    pointer-events: none;
 }
 
 .recipe__item__buttons {
@@ -138,14 +140,14 @@
 }
 .recipe__collection__filter__list {
     display: flex;
-    gap: 0.4em;
+    gap: 5px;
     flex-wrap: wrap;
     margin-bottom: 0;
 }
 
 .filter__button {
     &.active {
-        background-color: greenyellow;
+        background-color: var(--col-green);
     }
 }
 
@@ -180,6 +182,7 @@
     height: 100%;
     text-transform: uppercase;
     padding: 0.3rem !important;
+    flex-grow: 1;
 }
 
 .ingredients__popout {

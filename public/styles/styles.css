@@ -42,7 +42,7 @@
 body {
     position: relative;
     margin: 0;
-    padding: 7rem 5vw;
+    padding: 7rem 3vw;
     background-color: var(--col-bg);
     * {
         font-family: "Inter", sans-serif;
@@ -52,9 +52,9 @@ body {
         color: var(--col-bg);
     }
 
-    @media all and (min-width: 500px) {
+    /* @media all and (min-width: 500px) {
         padding: 7rem 5vw;
-    }
+    } */
 }
 
 input[type="text"],

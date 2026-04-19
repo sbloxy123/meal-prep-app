@@ -20,6 +20,7 @@
     color: var(--col-bg);
     cursor: pointer;
     text-transform: capitalize;
+    border: 0px;
 
     &.single__recipe__collection__item {
         background-color: rgba(var(--col-type--opac), 0.2);
