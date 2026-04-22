@@ -44,9 +44,9 @@ body {
     margin: 0;
     padding: 7rem 3vw;
     background-color: var(--col-bg);
+    font-family: "Inter", sans-serif;
+    color: var(--col-type);
     * {
-        font-family: "Inter", sans-serif;
-        color: var(--col-type);
     }
     button {
         color: var(--col-bg);

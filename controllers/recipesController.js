@@ -14,6 +14,8 @@ async function getRecipes(req, res, next) {
         // console.log(shoppingListIngredientsByRecipe);
         // console.log(singleRecipeIngredients);
 
+        console.log(allRecipes[0]);
+
         res.render("index", {
             recipesPageTitle: "Our recipes",
             recipeItems: allRecipes,
@@ -165,6 +167,17 @@ async function updateRecipe(req, res, next) {
     }
 }
 
+async function markRecipeAsFavorite(req, res, next) {
+    try {
+        const { id } = req.params;
+        const { favorite } = req.body;
+        await db.setRecipeFavorite(id, favorite);
+        res.sendStatus(200);
+    } catch (error) {
+        next(error);
+    }
+}
+
 module.exports = {
     getRecipes,
     showSingleRecipe,
@@ -172,4 +185,5 @@ module.exports = {
     deleteRecipe,
     getUpdateRecipeForm,
     updateRecipe,
+    markRecipeAsFavorite,
 };

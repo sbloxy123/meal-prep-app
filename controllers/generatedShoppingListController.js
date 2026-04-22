@@ -11,10 +11,6 @@ async function getGeneratedShoppingList(req, res, next) {
             ),
         );
 
-        // table columns:
-        // product_name, aisle_name, recipe_count, is_custom_product, is_collected
-
-        // desired structure:
         let productsByAisles = [];
 
         generatedAisles.forEach((aisleName) => {

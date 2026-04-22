@@ -7,6 +7,8 @@
     "type": "commonjs",
     "main": "index.js",
     "scripts": {
+        "migrate:up": "node -r dotenv/config node_modules/.bin/node-pg-migrate up -m db/migrations",
+        "migrate:down": "node -r dotenv/config node_modules/.bin/node-pg-migrate down -m db/migrations",
         "test": "echo \"Error: no test specified\" && exit 1",
         "start": "node --watch app.js",
         "seed": "node -r dotenv/config db/populatedb.js"
@@ -19,6 +21,7 @@
         "express": "^5.2.1",
         "express-validator": "^7.3.1",
         "method-override": "^3.0.0",
+        "node-pg-migrate": "^8.0.4",
         "pg": "^8.18.0",
         "zod": "^4.3.6"
     }

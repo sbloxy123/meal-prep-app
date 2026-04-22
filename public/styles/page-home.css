@@ -5,6 +5,7 @@
     display: block;
     margin-left: auto;
     width: fit-content;
+    min-width: 200px;
     padding: 0.5rem;
     background-color: rgba(var(--col-light-green--opac), 0.8);
     color: var(--col-bg);

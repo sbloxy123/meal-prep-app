@@ -65,6 +65,7 @@
 }
 .menu__list__item {
     width: fit-content;
+    color: var(--col-bg);
 
     a {
         padding: 0.6rem 0.6rem;
@@ -78,6 +79,5 @@
     }
     span {
         color: var(--col-bg);
-        text-transform: uppercase;
     }
 }

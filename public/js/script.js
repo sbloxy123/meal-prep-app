@@ -290,6 +290,45 @@ function scripts() {
             addRecipePopout.classList.remove("open");
         });
 
+    // RECIPE FAVORITES
+    const recipe__favorite__button = document.querySelectorAll(
+        ".recipe__item__favorite__icon",
+    );
+    recipe__favorite__button.forEach((favoriteIcon) => {
+        if (favoriteIcon.classList.contains("active")) {
+            favoriteIcon
+                .closest("li")
+                .setAttribute("data-favorite-recipe", true);
+        }
+
+        favoriteIcon.addEventListener("click", async function (e) {
+            favoriteIcon.classList.toggle("active");
+            const recipeId = favoriteIcon.dataset.recipeId;
+            const recipeIsFavorite = favoriteIcon.classList.contains("active");
+
+            if (favoriteIcon.classList.contains("active")) {
+                favoriteIcon
+                    .closest("li")
+                    .setAttribute("data-favorite-recipe", true);
+            } else {
+                favoriteIcon
+                    .closest("li")
+                    .removeAttribute("data-favorite-recipe", true);
+            }
+
+            await fetch(`/recipes/${recipeId}/favorite`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ favorite: recipeIsFavorite }),
+            });
+        });
+    });
+
+    // TODO:
+    // set up fetch for favorite boolean table column. see - const checkboxes = document.querySelectorAll(".is__collected__checkbox");
+    // I've set up the styling toggle (see above) but I think this syling also needs to be set on page load - according to DB column value.
+    // setup controller, router & db query
+
     // RECIPES FILTER
 
     const filterList = document.querySelector(
@@ -327,26 +366,50 @@ function scripts() {
             filterList.appendChild(filterItem);
         });
 
+    const favoriteFilterButton = document.querySelector(
+        ".filter__button__favorite",
+    );
+
+    favoriteFilterButton &&
+        favoriteFilterButton.addEventListener("click", function () {
+            favoriteFilterButton.classList.toggle("active");
+            applyFilters();
+        });
+
     function applyFilters() {
-        const activeFilters = Array.from(
-            document.querySelectorAll(".filter__button.active"),
-        ).map((btn) => btn.dataset.filterName);
         const recipeItems = document.querySelectorAll(".recipe__item");
+        const activeTagFilters = Array.from(
+            document.querySelectorAll(
+                ".filter__button:not(.filter__button__favorite).active",
+            ),
+        ).map((btn) => btn.dataset.filterName);
+        const favFilterActive =
+            favoriteFilterButton &&
+            favoriteFilterButton.classList.contains("active");
 
         recipeItems.forEach((recipeItem) => {
-            if (activeFilters.length === 0) {
+            if (activeTagFilters.length === 0 && !favFilterActive) {
                 recipeItem.classList.remove("filtered");
                 return;
             }
-            const recipeTagNames = Array.from(
-                recipeItem?.querySelectorAll(
-                    ".single__recipe__collection__item",
-                ),
-            ).map((tag) => tag.dataset.tagName);
-            const matches = activeFilters.some((filter) =>
-                recipeTagNames.includes(filter),
-            );
-            recipeItem.classList.toggle("filtered", matches);
+
+            let matchesTags = true;
+            if (activeTagFilters.length > 0) {
+                const recipeTagNames = Array.from(
+                    recipeItem.querySelectorAll(
+                        ".single__recipe__collection__item",
+                    ),
+                ).map((tag) => tag.dataset.tagName);
+                matchesTags = activeTagFilters.some((filter) =>
+                    recipeTagNames.includes(filter),
+                );
+            }
+
+            const matchesFav =
+                !favFilterActive ||
+                recipeItem.dataset.favoriteRecipe === "true";
+
+            recipeItem.classList.toggle("filtered", matchesTags && matchesFav);
         });
     }
 
@@ -436,8 +499,6 @@ function scripts() {
     // get shopping list by aisles:
     const organiseButton = document.querySelector("#organise__list__button");
 
-    console.log("helo from generate button");
-
     organiseButton &&
         organiseButton.addEventListener("click", async () => {
             organiseButton.textContent = "Organising...";
@@ -461,7 +522,6 @@ function scripts() {
         });
 
     const checkboxes = document.querySelectorAll(".is__collected__checkbox");
-    console.log("hello from checkboxes", checkboxes);
     if (checkboxes.length > 0) {
         checkboxes.forEach((checkbox) => {
             checkbox.addEventListener("change", async () => {

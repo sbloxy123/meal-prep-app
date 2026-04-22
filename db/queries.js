@@ -398,6 +398,13 @@ async function toggleCollected(productId, status) {
     );
 }
 
+async function setRecipeFavorite(recipeId, favorite) {
+    await pool.query(
+        "UPDATE recipes SET favorite = $2 WHERE id = $1",
+        [recipeId, favorite],
+    );
+}
+
 module.exports = {
     getAllRecipes,
     findOneRecipe,
@@ -423,4 +430,5 @@ module.exports = {
     createShoppingListByAisles,
     getGeneratedShoppingListItems,
     toggleCollected,
+    setRecipeFavorite,
 };
