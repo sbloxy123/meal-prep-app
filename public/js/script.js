@@ -324,11 +324,6 @@ function scripts() {
         });
     });
 
-    // TODO:
-    // set up fetch for favorite boolean table column. see - const checkboxes = document.querySelectorAll(".is__collected__checkbox");
-    // I've set up the styling toggle (see above) but I think this syling also needs to be set on page load - according to DB column value.
-    // setup controller, router & db query
-
     // RECIPES FILTER
 
     const filterList = document.querySelector(
@@ -522,6 +517,7 @@ function scripts() {
         });
 
     const checkboxes = document.querySelectorAll(".is__collected__checkbox");
+
     if (checkboxes.length > 0) {
         checkboxes.forEach((checkbox) => {
             checkbox.addEventListener("change", async () => {
@@ -531,9 +527,35 @@ function scripts() {
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ is_collected: checkbox.checked }),
                 });
+                deleteItemButton = checkbox.nextElementSibling;
+                console.log(deleteItemButton);
+                deleteItemButton.classList.toggle("visible");
             });
         });
     }
+
+    const deleteCheckedItemButtons = document.querySelectorAll(
+        ".generated__item__delete__button",
+    );
+    deleteCheckedItemButtons &&
+        deleteCheckedItemButtons.forEach((shoppingItemDelete) => {
+            shoppingItemDelete.addEventListener("click", async function () {
+                const productId = shoppingItemDelete.dataset.productId;
+                const productName = shoppingItemDelete.dataset.productName;
+                await fetch(`/generated-shopping-list/item/${productId}`, {
+                    method: "DELETE",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        productId: productId,
+                        productName: productName,
+                    }),
+                });
+                shoppingItemDelete
+                    .closest(".aisle__product__list__item")
+                    .remove();
+                console.log();
+            });
+        });
 
     // SHOPPING LIST PAGE
 

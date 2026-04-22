@@ -34,18 +34,25 @@
                                 <li class="aisle__product__list__item ">
                                     
                                     <p class="aisle__product__list__item__title"><%= product.product_name %>  
-                                        <!-- <% if (product.recipe_count > 0) {%>
-                                            <sup>appears in  <%= product.recipe_count %> recipes</sup>
-                                        <% } %> -->
-                                        
+                                        <% if (product.recipe_count > 0) {%>
+                                            <sup> * in <%= product.recipe_count %> recipe</sup>
+                                        <% } %>
                                         <% if (product.quantity > 1) {%>
-                                            <span>- x <%= product.quantity %></span>
+                                            <sup> * in <%= product.quantity %> recipes</sup>
                                         <% } %>
                                     </p>
-                                    <input class="is__collected__checkbox" type="checkbox" id="is_collected" name="is_collected" <%= product.is_collected ? 'checked' : '' %> data-item-id="<%= product.id %>">
-                                    <!-- <% if(product.is_custom_product) { %>
-                                        <p><em>cutom product</em></p>
-                                    <% } %> -->
+                                    <div class="generated__list__item__action__buttons">
+                                        <input class="is__collected__checkbox" type="checkbox" id="is_collected" name="is_collected" <%= product.is_collected ? 'checked' : '' %> data-item-id="<%= product.id %>">
+
+                                        <button type="submit" class="<%= product.is_collected ? 'visible' : '' %> generated__item__delete__button form__button form__button__delete reset__button" data-product-id="<%= product.id %>" data-product-name="<%= product.product_name %>">
+                                            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                <path d="M3 6H21M5 6V20C5 21.1046 5.89543 22 7 22H17C18.1046 22 19 21.1046 19 20V6M8 6V4C8 2.89543 8.89543 2 10 2H14C15.1046 2 16 2.89543 16 4V6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                                <path d="M14 11V17" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                                <path d="M10 11V17" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                            </svg>
+                                        </button>
+
+                                    </div>
                                 </li>
 
                             <% }) %>

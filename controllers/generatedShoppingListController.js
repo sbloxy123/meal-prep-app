@@ -50,7 +50,20 @@ async function markShoppingListItemAsCollected(req, res, next) {
     }
 }
 
+async function deleteShoppingListItemBoth(req, res, next) {
+    try {
+        const productId = req.body.productId;
+        const productName = req.body.productName;
+        console.log(productId, productName);
+        await db.deleteProductItemBoth(productId, productName);
+    } catch (error) {
+        console.error(error);
+        next(error);
+    }
+}
+
 module.exports = {
     getGeneratedShoppingList,
     markShoppingListItemAsCollected,
+    deleteShoppingListItemBoth,
 };

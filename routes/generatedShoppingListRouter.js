@@ -10,5 +10,9 @@ generatedShoppingListRouter.put(
     "/item/:id",
     generatedShoppingListController.markShoppingListItemAsCollected,
 );
+generatedShoppingListRouter.delete(
+    "/item/:id",
+    generatedShoppingListController.deleteShoppingListItemBoth,
+);
 
 module.exports = generatedShoppingListRouter;

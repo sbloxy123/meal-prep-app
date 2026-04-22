@@ -399,9 +399,19 @@ async function toggleCollected(productId, status) {
 }
 
 async function setRecipeFavorite(recipeId, favorite) {
+    await pool.query("UPDATE recipes SET favorite = $2 WHERE id = $1", [
+        recipeId,
+        favorite,
+    ]);
+}
+
+async function deleteProductItemBoth(productId, productName) {
+    await pool.query("DELETE FROM generated_shopping_list WHERE id = $1", [
+        productId,
+    ]);
     await pool.query(
-        "UPDATE recipes SET favorite = $2 WHERE id = $1",
-        [recipeId, favorite],
+        "DELETE FROM shopping_list WHERE custom_product = $1 OR ingredient_name = $1",
+        [productName],
     );
 }
 
@@ -431,4 +441,5 @@ module.exports = {
     getGeneratedShoppingListItems,
     toggleCollected,
     setRecipeFavorite,
+    deleteProductItemBoth,
 };
