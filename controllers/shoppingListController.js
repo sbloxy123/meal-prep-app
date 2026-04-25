@@ -227,7 +227,35 @@ async function organiseShoppingList(req, res, next) {
             .replace(/^```json\n?/, "")
             .replace(/\n?```$/, "")
             .trim();
-        const result = JSON.parse(rawText);
+
+        console.log("[organiseShoppingList] Raw Claude response:", rawText);
+
+        // Sanitise common causes of "Unterminated string in JSON":
+        // replace literal newlines and carriage returns inside the payload
+        // with their escaped equivalents so JSON.parse doesn't choke.
+        const sanitisedText = rawText
+            .replace(/\r\n/g, "\\n")
+            .replace(/\r/g, "\\n")
+            .replace(/\n/g, "\\n");
+
+        let result;
+        try {
+            result = JSON.parse(sanitisedText);
+        } catch (parseError) {
+            console.error(
+                "[organiseShoppingList] JSON parse failed:",
+                parseError.message,
+            );
+            console.error(
+                "[organiseShoppingList] Sanitised text that failed to parse:",
+                sanitisedText,
+            );
+            return res.status(400).json({
+                error: "Failed to parse Claude response as JSON",
+                details: parseError.message,
+                rawResponse: rawText,
+            });
+        }
 
         // result = {
         //     items: [
