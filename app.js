@@ -37,6 +37,9 @@ initializeDatabase()
         });
     })
     .catch((error) => {
-        console.error("Failed to initialize database, server not started:", error.message);
+        console.error(
+            "Failed to initialize database, server not started:",
+            error.message,
+        );
         process.exit(1);
     });

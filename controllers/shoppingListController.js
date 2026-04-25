@@ -207,6 +207,7 @@ async function organiseShoppingList(req, res, next) {
                         If the recipe's recipe_count is 0, mark is_custom_produt to true
                         Return ONLY valid raw JSON with no other text, or wrapping in markdown code fences or backticks. If the item has additional text such as 'x3' or 'x 4' etc, please use your initiative and add it to the quantity property. Use quantity of 1 if nothing is specified. If an item appears for both is_custom_product: true AND false, please just update the existing item.quantity by the relevant amount.
                         If an item is a herb plant, put it in the fresh produce supermarket aisle.
+                        Please make sure the JSON response from Claude doesn't contain unescaped quotes or newlines in the product names.
                         Please use exactly this structure:
                         {
                             items: [
