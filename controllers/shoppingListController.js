@@ -1,5 +1,6 @@
 const db = require("../db/queries");
 const Anthropic = require("@anthropic-ai/sdk");
+const { jsonrepair } = require("jsonrepair");
 const client = new Anthropic();
 
 const {
@@ -234,26 +235,20 @@ async function organiseShoppingList(req, res, next) {
         try {
             result = JSON.parse(rawText);
         } catch (parseError) {
-            // Raw parse failed — try replacing unescaped control characters
-            // that may appear inside string values in malformed responses.
-            const sanitisedText = rawText.replace(
-                /"(?:[^"\\]|\\.)*"/g,
-                (match) => match.replace(/\r\n|\r|\n/g, "\\n"),
-            );
             try {
-                result = JSON.parse(sanitisedText);
-            } catch (sanitisedParseError) {
+                result = JSON.parse(jsonrepair(rawText));
+            } catch (repairError) {
                 console.error(
                     "[organiseShoppingList] JSON parse failed:",
-                    sanitisedParseError.message,
+                    repairError.message,
                 );
                 console.error(
-                    "[organiseShoppingList] Sanitised text that failed to parse:",
-                    sanitisedText,
+                    "[organiseShoppingList] Raw text that failed to parse:",
+                    rawText,
                 );
                 return res.status(400).json({
                     error: "Failed to parse Claude response as JSON",
-                    details: sanitisedParseError.message,
+                    details: repairError.message,
                     rawResponse: rawText,
                 });
             }
