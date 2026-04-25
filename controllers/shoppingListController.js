@@ -230,31 +230,33 @@ async function organiseShoppingList(req, res, next) {
 
         console.log("[organiseShoppingList] Raw Claude response:", rawText);
 
-        // Sanitise common causes of "Unterminated string in JSON":
-        // replace literal newlines and carriage returns inside the payload
-        // with their escaped equivalents so JSON.parse doesn't choke.
-        const sanitisedText = rawText
-            .replace(/\r\n/g, "\\n")
-            .replace(/\r/g, "\\n")
-            .replace(/\n/g, "\\n");
-
         let result;
         try {
-            result = JSON.parse(sanitisedText);
+            result = JSON.parse(rawText);
         } catch (parseError) {
-            console.error(
-                "[organiseShoppingList] JSON parse failed:",
-                parseError.message,
+            // Raw parse failed — try replacing unescaped control characters
+            // that may appear inside string values in malformed responses.
+            const sanitisedText = rawText.replace(
+                /"(?:[^"\\]|\\.)*"/g,
+                (match) => match.replace(/\r\n|\r|\n/g, "\\n"),
             );
-            console.error(
-                "[organiseShoppingList] Sanitised text that failed to parse:",
-                sanitisedText,
-            );
-            return res.status(400).json({
-                error: "Failed to parse Claude response as JSON",
-                details: parseError.message,
-                rawResponse: rawText,
-            });
+            try {
+                result = JSON.parse(sanitisedText);
+            } catch (sanitisedParseError) {
+                console.error(
+                    "[organiseShoppingList] JSON parse failed:",
+                    sanitisedParseError.message,
+                );
+                console.error(
+                    "[organiseShoppingList] Sanitised text that failed to parse:",
+                    sanitisedText,
+                );
+                return res.status(400).json({
+                    error: "Failed to parse Claude response as JSON",
+                    details: sanitisedParseError.message,
+                    rawResponse: rawText,
+                });
+            }
         }
 
         // result = {
