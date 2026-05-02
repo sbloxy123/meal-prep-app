@@ -357,8 +357,6 @@ async function removeRecipeFromShoppingList(recipeId) {
 }
 
 async function addSingleItemToGeneratedList(product) {
-    console.log(product);
-
     await pool.query(
         "INSERT INTO generated_shopping_list (product_name, aisle_name, recipe_count, is_custom_product, quantity) VALUES ($1, $2, $3, $4, $5)",
         [
@@ -373,7 +371,6 @@ async function addSingleItemToGeneratedList(product) {
 
 async function createShoppingListByAisles(generatedShoppingItems) {
     try {
-        console.log(generatedShoppingItems);
         await pool.query("DELETE FROM generated_shopping_list");
         await Promise.all(
             generatedShoppingItems.items.map((product) =>

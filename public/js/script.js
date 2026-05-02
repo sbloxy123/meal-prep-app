@@ -507,13 +507,12 @@ function scripts() {
             if (response.ok) {
                 window.location.href = "/generated-shopping-list";
             } else {
-                console.error("Something went wrong");
+                console.error("Something went wrong", data);
+                document.querySelector("#organised__list__output").innerText =
+                    data.error || "Something went wrong";
+                organiseButton.textContent = "Organise by aisle";
+                organiseButton.disabled = false;
             }
-
-            document.querySelector("#organised__list__output").innerText =
-                data.result;
-            organiseButton.textContent = "Organise by aisle";
-            organiseButton.disabled = false;
         });
 
     const checkboxes = document.querySelectorAll(".is__collected__checkbox");
