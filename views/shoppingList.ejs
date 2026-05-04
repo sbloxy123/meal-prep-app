@@ -7,7 +7,7 @@
         <link rel="icon" type="image/svg+xml" href="/images/favicon.svg">
         <link rel="stylesheet" href="/styles/styles.css" />
         <link rel="stylesheet" href="/styles/shopping-list.css" />
-        <script type="text/javascript" src="/js/script.js"></script>
+        <script type="module" src="/js/script.js"></script>
 
         <link rel="preconnect" href="https://fonts.googleapis.com">
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -33,14 +33,14 @@
                         </ul>
                     </div>
 
-                    <button class="layout__toggle__button reset__button ui__button ui__button__update">
+                    <!-- <button class="layout__toggle__button reset__button ui__button ui__button__update">
                         <span>Toggle Layout</span>
                         <svg viewBox="0 0 33 33" fill="none" xmlns="http://www.w3.org/2000/svg">
                             <path d="M1.25 11.25H31.25M11.25 31.25V11.25M4.58333 1.25H27.9167C29.7576 1.25 31.25 2.74238 31.25 4.58333V27.9167C31.25 29.7576 29.7576 31.25 27.9167 31.25H4.58333C2.74238 31.25 1.25 29.7576 1.25 27.9167V4.58333C1.25 2.74238 2.74238 1.25 4.58333 1.25Z" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
                         </svg>
-                    </button>
+                    </button> -->
 
-                    <ul class="recipe__list layout__2">
+                    <ul class="recipe__list">
                         <% allRecipesOnMenu.forEach(recipe => { %>
                             <li class="recipe__item" data-title="<%= recipe.title %>" data-is-on-menu="<%= recipe.is_on_menu %>">
                                 <button class="<%= recipe.favorite ? 'active' : '' %> recipe__item__favorite__icon reset__button" data-recipe-id="<%= recipe.id %>">
@@ -56,16 +56,36 @@
                                 </ul>
                                 <div class="recipe__item__block">
                                     <h3 class="recipe__item__title"><%= recipe.title %></h3>
-                                    <p class="recipe__item__description"><%= recipe.description %></p>
-
-
-                                    <div class="recipe__item__buttons">
-                                        <div class="">
-                                            <a href="/recipes/<%= recipe.id %>/update" class="recipe__item__add__button form__button reset__button form__button__edit reset__a">Update Recipe</a>
-                                        </div>
+                                    
+                                    <div class="add__to__cook__list">
+                                        <% if(!recipe.is_on_menu ) { %>
+                                            <button class="add__to__cook__list__button ui__button ui__button__submit" type="button">
+                                                Add to pan
+                                            </button>
+                                        <% } else { %>
+                                            <span class="on__menu__label">✓ On this week's menu</span>
+                                            <div class="recipe__item__buttons">
+                                                <button class="add__to__cook__list__button ui__button ui__button__update" type="button">
+                                                    Edit stock check
+                                                </button>
+                                                <form action="/shopping-list/recipe/<%= recipe.id %>?_method=PUT" method="POST">
+                                                    <button type="submit" class="remove__from__cook__list__button ui__button ui__button__warning">
+                                                        Remove from pan
+                                                    </button>
+                                                </form>
+                                            </div>
+                                        <% } %>
                                     </div>
                                     <div class="ingredients__popout">
+                                        <div class="close__ingredients__popup close__ingredients__popup__bg"></div>
                                         <div class="ingredients__popout__block">
+                                            <div class="close__ingredients__popup">
+                                                <button type="button" class="reset__button">
+                                                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                        <path d="M1.4 14L0 12.6L5.6 7L0 1.4L1.4 0L7 5.6L12.6 0L14 1.4L8.4 7L14 12.6L12.6 14L7 8.4L1.4 14Z" fill="currentColor"/>
+                                                    </svg>
+                                                </button>
+                                            </div>
                                             <h3><%= recipe.title %></h3>
                                             <p>add ingredients to your pan:</p>
                                             <ul class="ingredients__popout__list reset__ul">
@@ -91,29 +111,15 @@
                                                 </div>
                                                 <button class="add__ingredients__to__pan__button" type="submit">add recipe and ingredients</button>
                                             </form>
+                                            <h3>Recipe Details:</h3>
 
-                                            <button type="button" class="close__ingredients__popup">
-                                            ｘ
-                                            </button>
-                                            
+                                            <%- include('partials/updateRecipeForm', {
+                                                recipe,
+                                                recipeIngredientsForUpdate: singleRecipeIngredients.filter(i => i.recipe_title === recipe.title),
+                                                recipeTagsForUpdate: singleRecipeTags.filter(t => t.tag_recipe_title === recipe.title),
+                                                allTags
+                                            }) %>
                                         </div>
-                                    </div>
-                                    <div class="add__to__cook__list">
-                                        <% if(!recipe.is_on_menu ) { %>
-                                            <button class="add__to__cook__list__button ui__button ui__button__submit" type="button">
-                                                Add to pan
-                                            </button>
-                                        <% } else { %>
-                                            <span class="on__menu__label">✓ On this week's menu</span>
-                                            <button class="add__to__cook__list__button ui__button ui__button__update" type="button">
-                                                Edit stock check
-                                            </button>
-                                            <form action="/shopping-list/recipe/<%= recipe.id %>?_method=PUT" method="POST">
-                                                <button type="submit" class="remove__from__cook__list__button ui__button ui__button__warning">
-                                                    Remove from pan
-                                                </button>
-                                            </form>
-                                        <% } %>
                                     </div>
                                 </div>
                             </li> 

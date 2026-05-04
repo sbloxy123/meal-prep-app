@@ -13,7 +13,7 @@
     }
 }
 
-.layout__toggle__button {
+/* .layout__toggle__button {
     margin-top: 1.6rem;
     display: flex;
     gap: 0.8rem;
@@ -21,7 +21,7 @@
     svg {
         width: 14px;
     }
-}
+} */
 
 .recipe__list {
     display: flex;
@@ -51,11 +51,11 @@
 }
 .recipe__item__block {
     /* max-width: 70%; */
-    padding: 0 1.4rem 1.4rem;
-    .recipe__list.layout__3 &,
+    padding: 0 1rem 1.4rem;
+    /* .recipe__list.layout__3 &,
     .recipe__list.layout__2 & {
         padding-bottom: 1rem;
-    }
+    } */
 }
 .recipe__item__favorite__icon {
     position: absolute;
@@ -77,10 +77,10 @@
     margin-top: 0.8rem;
     min-height: 2lh;
     text-transform: capitalize;
-    .recipe__list.layout__3 &,
+    /* .recipe__list.layout__3 &,
     .recipe__list.layout__2 & {
         margin-block: 0.3rem;
-    }
+    } */
 }
 .recipe__item__description {
     display: none;
@@ -115,16 +115,13 @@
 }
 
 .recipe__item__buttons {
+    width: 100%;
     display: flex;
+    /* display: flex;
     gap: 0.4rem;
     flex-wrap: wrap;
     align-items: center;
-
-    .recipe__list.layout__2 &,
-    .recipe__list.layout__3 & {
-        display: none;
-    }
-
+ */
     > form,
     > div {
         flex-grow: 1;
@@ -137,12 +134,8 @@
     }
 }
 .recipe__item__add__button {
-    /* background-color: rgba(158, 210, 81, 0.3);
-    border: 1px solid rgba(158, 210, 81, 1); */
 }
 .recipe__item__delete__button {
-    /* background-color: rgba(190, 21, 21, 0.2);
-    border-color: rgba(190, 21, 21, 1); */
 }
 
 /* FILTERING */
@@ -219,11 +212,16 @@
     margin-bottom: 0.2rem;
     width: 100%;
     min-height: 1lh;
+    /* display: none;
+
+    .recipe__item[data-is-on-menu="true"] & {
+        display: block;
+    } */
 }
 .add__to__cook__list__button,
 .remove__from__cook__list__button {
     width: 100%;
-    height: 100%;
+    /* height: 100%; */
     text-transform: uppercase;
     padding: 0.3rem !important;
     flex-grow: 1;
@@ -249,10 +247,12 @@
     background-color: rgba(var(--col-bg--opac), 1);
     backdrop-filter: blur(2px);
     padding: 1rem;
+    padding-right: 1.2em;
     margin: auto;
     color: var(--col-type);
     border: 2px solid var(--col-green);
     border-radius: 4px;
+    overflow: auto;
 }
 .ingredients__popout__title {
     margin-top: 0.3rem;
@@ -304,17 +304,64 @@
     cursor: pointer;
 }
 .close__ingredients__popup {
-    position: absolute;
+    position: sticky;
     top: 0.5rem;
-    right: 0.5rem;
-    background: transparent;
-    color: var(--type);
-    font-size: 2rem;
-    line-height: 1;
-    border: 0px solid transparent;
-    cursor: pointer;
-    transition: transform 300ms ease;
-    &:hover {
-        transform: scale(1.15);
+    display: flex;
+    justify-content: flex-end;
+
+    button {
+        /* background: transparent; */
+        color: var(--type);
+        font-size: 2rem;
+        line-height: 1;
+        border: 2px solid var(--col-type);
+        cursor: pointer;
+        line-height: 0;
+        aspect-ratio: 1;
+        border-radius: 4px;
+        background-color: rgba(var(--col-bg--opac), 0.7);
+        backdrop-filter: blur(2px);
+        svg {
+            transition: transform 300ms ease;
+        }
+        &:hover {
+            svg {
+                transform: scale(1.15);
+            }
+        }
     }
+}
+
+.close__ingredients__popup__bg {
+    position: absolute;
+    inset: 0;
+}
+
+.update__recipe__save__bar {
+    position: sticky;
+    bottom: 0;
+    padding-top: 1.25rem;
+    background: linear-gradient(
+        to bottom,
+        transparent,
+        rgba(var(--col-bg--opac), 1) 40%
+    );
+
+    .update__recipe__submit {
+        width: 100%;
+        transition:
+            background-color 200ms ease,
+            border-color 200ms ease,
+            box-shadow 200ms ease;
+    }
+
+    &.is-dirty .update__recipe__submit {
+        background-color: var(--col-orange);
+        border-color: color-mix(in srgb, var(--col-orange), #000 20%);
+        color: var(--col-bg);
+        box-shadow: 0 0 0 3px rgba(var(--col-orange--opac), 0.35);
+    }
+}
+.update__delete__recipe__button {
+    margin-top: 2rem;
 }

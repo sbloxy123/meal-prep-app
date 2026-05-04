@@ -1,0 +1,114 @@
+<div class="update__recipe__form__container" data-recipe-id="<%= recipe.id %>">
+    <button type="button" class="toggle__update__form__button ui__button">Edit recipe</button>
+
+    <div class="update__recipe__form" hidden>
+        <form class="update__recipe__form__el add__recipe__form">
+            <div class="add__recipe__form__block">
+                <div class="form__group">
+                    <h3>Edit recipe details</h3>
+
+                    <div class="form__field">
+                        <label>Title</label>
+                        <input type="text" class="update__recipe__title" name="recipe_title" value="<%= recipe.title %>">
+                    </div>
+                    <div class="form__field">
+                        <label>Description</label>
+                        <textarea class="update__recipe__description" name="recipe_description"><%= recipe.description %></textarea>
+                    </div>
+                    <div class="form__field">
+                        <label>Instructions</label>
+                        <textarea class="update__recipe__instructions" name="recipe_instructions"><%= recipe.instructions %></textarea>
+                    </div>
+                    <div class="form__field">
+                        <label>Link</label>
+                        <input type="text" name="recipe_link_url" value="<%= recipe.link_url %>">
+                    </div>
+                    <div class="form__field">
+                        <label>Prep time (mins)</label>
+                        <input type="number" name="prep_time_minutes" value="<%= recipe.prep_time_minutes %>">
+                    </div>
+                    <div class="form__field">
+                        <label>Cook time (mins)</label>
+                        <input type="number" name="cook_time_minutes" value="<%= recipe.cook_time_minutes %>">
+                    </div>
+                </div>
+
+                <div class="form__group">
+                    <h3>Ingredients</h3>
+                    <ul class="update__ingredient__list">
+                        <% recipeIngredientsForUpdate.forEach(ingredient => { %>
+                            <li class="update__ingredient__list__item"
+                                data-name="<%= ingredient.ingredient %>"
+                                data-quantity="<%= ingredient.quantity %>"
+                                data-unit="<%= ingredient.unit %>">
+                            </li>
+                        <% }) %>
+                    </ul>
+                    <div class="ingredient__input__form">
+                        <div class="form__field">
+                            <label>Ingredient</label>
+                            <input type="text" class="update__ingredient__name__input" placeholder="e.g. flour">
+                        </div>
+                        <div class="ingredient__inputs__measurements">
+                            <div class="form__field">
+                                <label>Quantity</label>
+                                <input type="number" class="update__ingredient__quantity__input" placeholder="e.g. 200">
+                            </div>
+                            <div class="form__field">
+                                <label>Unit</label>
+                                <input type="text" class="update__ingredient__unit__input" placeholder="e.g. g">
+                            </div>
+                        </div>
+                        <button type="button" class="update__add__ingredient__button ui__button">Add ingredient</button>
+                    </div>
+                    <div class="update__ingredient__form__values"></div>
+                </div>
+
+                <div class="form__group">
+                    <div class="collections">
+                        <h3>Collections</h3>
+                        <p>Current collections:</p>
+                        <ul class="update__selected__tag__list">
+                            <% recipeTagsForUpdate.forEach(tag => { %>
+                                <li class="selected__tag__item">
+                                    <div class="selected__tag__item__block tag__item" data-value-title="<%= tag.name %>">
+                                        <%= tag.name %>
+                                        <div class="tag__remove__button"><span>❌</span></div>
+                                    </div>
+                                </li>
+                            <% }) %>
+                        </ul>
+
+                        <div class="existing__collection">
+                            <p>Add from existing collection:</p>
+                            <ul class="update__existing__collection__list">
+                                <% allTags?.forEach(tag => { %>
+                                    <li class="existing__collection__item">
+                                        <button type="button" data-tag-title="<%= tag.name %>" class="existing__collection__item__button">
+                                            <%= tag.name %>
+                                        </button>
+                                    </li>
+                                <% }) %>
+                            </ul>
+                        </div>
+
+                        <p class="new__collections__add__title">Add a new collection:</p>
+                        <div class="new__colection">
+                            <input type="text" class="update__collection__input">
+                            <button type="button" class="update__add__collection__button ui__button ui__button__submit">Add new collection</button>
+                        </div>
+                        <div class="update__collection__form__values"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="update__recipe__save__bar">
+                <button class="update__recipe__submit ui__button ui__button__submit" type="submit">Save changes</button>
+            </div>
+        </form>
+
+        <button type="button" class="update__delete__recipe__button reset__button ui__button ui__button__warning">
+            Delete recipe
+        </button>
+    </div>
+</div>

@@ -1,3 +1,5 @@
+import { initAllUpdateForms } from "./updateRecipeForm.js";
+
 document.addEventListener("DOMContentLoaded", scripts);
 
 function scripts() {
@@ -409,23 +411,23 @@ function scripts() {
     }
 
     // toggle recipe list layout
-    const toggleLayoutButton = document.querySelector(
-        ".layout__toggle__button",
-    );
+    // const toggleLayoutButton = document.querySelector(
+    //     ".layout__toggle__button",
+    // );
 
-    if (toggleLayoutButton) {
-        const recipeList = document.querySelector(".recipe__list");
-        const layouts = ["layout__1", "layout__2", "layout__3"];
+    // if (toggleLayoutButton) {
+    //     const recipeList = document.querySelector(".recipe__list");
+    //     const layouts = ["layout__1", "layout__2", "layout__3"];
 
-        toggleLayoutButton.addEventListener("click", function () {
-            const current = layouts.findIndex((l) =>
-                recipeList.classList.contains(l),
-            );
-            const next = (current + 1) % layouts.length;
-            layouts.forEach((l) => recipeList.classList.remove(l));
-            recipeList.classList.add(layouts[next]);
-        });
-    }
+    //     toggleLayoutButton.addEventListener("click", function () {
+    //         const current = layouts.findIndex((l) =>
+    //             recipeList.classList.contains(l),
+    //         );
+    //         const next = (current + 1) % layouts.length;
+    //         layouts.forEach((l) => recipeList.classList.remove(l));
+    //         recipeList.classList.add(layouts[next]);
+    //     });
+    // }
 
     // ==== ADD RECIPE & INGREDIENTS TO SHOPPING LIST ==== //
 
@@ -526,35 +528,34 @@ function scripts() {
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ is_collected: checkbox.checked }),
                 });
-                deleteItemButton = checkbox.nextElementSibling;
-                console.log(deleteItemButton);
+                const deleteItemButton = checkbox.nextElementSibling;
                 deleteItemButton.classList.toggle("visible");
             });
         });
     }
 
-    const deleteCheckedItemButtons = document.querySelectorAll(
-        ".generated__item__delete__button",
-    );
-    deleteCheckedItemButtons &&
-        deleteCheckedItemButtons.forEach((shoppingItemDelete) => {
-            shoppingItemDelete.addEventListener("click", async function () {
-                const productId = shoppingItemDelete.dataset.productId;
-                const productName = shoppingItemDelete.dataset.productName;
-                await fetch(`/generated-shopping-list/item/${productId}`, {
-                    method: "DELETE",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        productId: productId,
-                        productName: productName,
-                    }),
-                });
-                shoppingItemDelete
-                    .closest(".aisle__product__list__item")
-                    .remove();
-                console.log();
+    const generatedLists = document.querySelector(".generated__lists");
+    if (generatedLists) {
+        generatedLists.addEventListener("click", async function (e) {
+            const shoppingItemDelete = e.target.closest(
+                ".generated__item__delete__button",
+            );
+            if (!shoppingItemDelete) return;
+            const productId = shoppingItemDelete.dataset.productId;
+            const productName = shoppingItemDelete.dataset.productName;
+            shoppingItemDelete.closest(".aisle__product__list__item").remove();
+            fetch(`/generated-shopping-list/item/${productId}`, {
+                method: "DELETE",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ productId, productName }),
             });
         });
+    }
+
+    // ==================
+    // UPDATE RECIPE FORMS (inline popout)
+    // ==================
+    initAllUpdateForms();
 
     // SHOPPING LIST PAGE
 

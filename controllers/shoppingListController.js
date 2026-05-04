@@ -54,6 +54,7 @@ async function getShoppingList(req, res, next) {
     const allRecipesOnMenu = await db.allRecipesOnMenu();
     const singleRecipeIngredients = await db.getSingleRecipeIngredients();
     const singleRecipeTags = await db.getSingleRecipeTags();
+    const allTags = await db.getAllTags();
     const shoppingList = await db.getShoppingListItems();
     const shoppingListIngredientsByRecipe =
         await db.getShoppingListIngredientsByRecipe();
@@ -67,6 +68,7 @@ async function getShoppingList(req, res, next) {
             allRecipesOnMenu: allRecipesOnMenu,
             singleRecipeIngredients: singleRecipeIngredients,
             singleRecipeTags: singleRecipeTags,
+            allTags,
             shoppingListIngredientsByRecipe,
         });
     } catch (error) {
@@ -177,7 +179,6 @@ async function removeRecipeFromShoppingList(req, res, next) {
         const recipeId = req.params.id;
         await db.removeRecipeFromShoppingList(recipeId);
         res.redirect("/");
-        // todo - change this redirect to /shopping-list if user is updating on shopping list page. see below note.
     } catch (error) {
         console.error(error);
         next(error);

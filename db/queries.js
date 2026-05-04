@@ -126,7 +126,7 @@ async function getSingleRecipeTags() {
 }
 async function getSingleRecipeIngredients() {
     const { rows } = await pool.query(
-        "SELECT title AS recipe_title, ingredients.name AS ingredient, ingredients.id AS ingredient_id FROM recipe_ingredients INNER JOIN recipes ON recipes.id = recipe_ingredients.recipe_id INNER JOIN ingredients ON ingredients.id = recipe_ingredients.ingredient_id;",
+        "SELECT title AS recipe_title, ingredients.name AS ingredient, ingredients.id AS ingredient_id, recipe_ingredients.quantity, recipe_ingredients.unit FROM recipe_ingredients INNER JOIN recipes ON recipes.id = recipe_ingredients.recipe_id INNER JOIN ingredients ON ingredients.id = recipe_ingredients.ingredient_id;",
     );
     return rows;
 }

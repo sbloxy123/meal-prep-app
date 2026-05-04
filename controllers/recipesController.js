@@ -78,9 +78,13 @@ async function deleteRecipe(req, res, next) {
     try {
         const recipeId = req.params.id;
         await db.deleteRecipe(recipeId);
+        if (req.headers.accept?.includes("application/json")) {
+            return res.sendStatus(200);
+        }
         res.redirect("/");
     } catch (error) {
         console.error(error);
+        next(error);
     }
 }
 
@@ -159,6 +163,20 @@ async function updateRecipe(req, res, next) {
         }
 
         await db.updateRecipe(data, recipeId);
+
+        if (req.headers.accept?.includes("application/json")) {
+            const [updatedIngredients, updatedTags] = await Promise.all([
+                db.getRecipeIngredients(recipeId),
+                db.getRecipeTags(recipeId),
+            ]);
+            return res.json({
+                ok: true,
+                title: data.recipe_title,
+                description: data.recipe_description,
+                ingredients: updatedIngredients,
+                tags: updatedTags,
+            });
+        }
 
         res.redirect(`/recipes/${recipeId}`);
     } catch (error) {
