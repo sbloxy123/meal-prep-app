@@ -59,7 +59,8 @@ body {
 
 input[type="text"],
 input[type="number"],
-textarea[type="text"] {
+input[type="number"],
+textarea {
     background-color: var(--form-field-bg);
     color: var(--col-type);
     border: 0px;

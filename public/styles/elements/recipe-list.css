@@ -149,9 +149,6 @@
     margin-top: 0;
 }
 .recipe__collection__filter__list {
-    display: flex;
-    gap: 5px;
-    flex-wrap: wrap;
     margin-bottom: 0;
 }
 .recipe__collection__filter__favorite {

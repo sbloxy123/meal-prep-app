@@ -35,9 +35,9 @@
 
                 <div class="form__group">
                     <h3>Ingredients</h3>
-                    <ul class="update__ingredient__list">
+                    <ul class="update__ingredient__list reset__ul">
                         <% recipeIngredientsForUpdate.forEach(ingredient => { %>
-                            <li class="update__ingredient__list__item"
+                            <li class="update__ingredient__list__item ingredient__list__item"
                                 data-name="<%= ingredient.ingredient %>"
                                 data-quantity="<%= ingredient.quantity %>"
                                 data-unit="<%= ingredient.unit %>">
@@ -68,7 +68,7 @@
                     <div class="collections">
                         <h3>Collections</h3>
                         <p>Current collections:</p>
-                        <ul class="update__selected__tag__list">
+                        <ul class="update__selected__tag__list tag__list reset__ul">
                             <% recipeTagsForUpdate.forEach(tag => { %>
                                 <li class="selected__tag__item">
                                     <div class="selected__tag__item__block tag__item" data-value-title="<%= tag.name %>">
@@ -81,7 +81,7 @@
 
                         <div class="existing__collection">
                             <p>Add from existing collection:</p>
-                            <ul class="update__existing__collection__list">
+                            <ul class="update__existing__collection__list tag__list reset__ul">
                                 <% allTags?.forEach(tag => { %>
                                     <li class="existing__collection__item">
                                         <button type="button" data-tag-title="<%= tag.name %>" class="existing__collection__item__button">

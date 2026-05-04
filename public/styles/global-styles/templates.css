@@ -11,6 +11,12 @@
     }
 }
 
+.tag__list {
+    display: flex;
+    gap: 5px;
+    flex-wrap: wrap;
+}
+
 .tag__item {
     position: relative;
     padding: var(--tag-padding);

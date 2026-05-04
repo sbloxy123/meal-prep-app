@@ -4,24 +4,44 @@ export function initUpdateForm(container) {
 
     // --- INGREDIENTS ---
     const ingredientList = container.querySelector(".update__ingredient__list");
-    const ingredientFormValues = container.querySelector(".update__ingredient__form__values");
-    const nameInput = container.querySelector(".update__ingredient__name__input");
-    const quantityInput = container.querySelector(".update__ingredient__quantity__input");
-    const unitInput = container.querySelector(".update__ingredient__unit__input");
-    const addIngredientBtn = container.querySelector(".update__add__ingredient__button");
+    const ingredientFormValues = container.querySelector(
+        ".update__ingredient__form__values",
+    );
+    const nameInput = container.querySelector(
+        ".update__ingredient__name__input",
+    );
+    const quantityInput = container.querySelector(
+        ".update__ingredient__quantity__input",
+    );
+    const unitInput = container.querySelector(
+        ".update__ingredient__unit__input",
+    );
+    const addIngredientBtn = container.querySelector(
+        ".update__add__ingredient__button",
+    );
 
     let ingredients = [];
 
-    Array.from(ingredientList.querySelectorAll(".update__ingredient__list__item")).forEach((item) => {
+    Array.from(
+        ingredientList.querySelectorAll(".update__ingredient__list__item"),
+    ).forEach((item) => {
         if (item.dataset.name) {
-            ingredients.push({ name: item.dataset.name, quantity: item.dataset.quantity, unit: item.dataset.unit });
+            ingredients.push({
+                name: item.dataset.name,
+                quantity: item.dataset.quantity,
+                unit: item.dataset.unit,
+            });
         }
     });
 
     function syncIngredientHiddenInputs() {
         ingredientFormValues.innerHTML = "";
         ingredients.forEach(({ name, quantity, unit }) => {
-            [["ingredient_name", name], ["ingredient_quantity", quantity], ["ingredient_unit", unit]].forEach(([fieldName, val]) => {
+            [
+                ["ingredient_name", name],
+                ["ingredient_quantity", quantity],
+                ["ingredient_unit", unit],
+            ].forEach(([fieldName, val]) => {
                 const input = document.createElement("input");
                 input.type = "hidden";
                 input.name = fieldName;
@@ -92,16 +112,25 @@ export function initUpdateForm(container) {
     });
 
     // --- TAGS ---
-    const selectedTagList = container.querySelector(".update__selected__tag__list");
-    const collectionFormValues = container.querySelector(".update__collection__form__values");
-    const collectionInput = container.querySelector(".update__collection__input");
-    const addCollectionBtn = container.querySelector(".update__add__collection__button");
+    const selectedTagList = container.querySelector(
+        ".update__selected__tag__list",
+    );
+    const collectionFormValues = container.querySelector(
+        ".update__collection__form__values",
+    );
+    const collectionInput = container.querySelector(
+        ".update__collection__input",
+    );
+    const addCollectionBtn = container.querySelector(
+        ".update__add__collection__button",
+    );
 
     let noTagsAlertItem;
     if (selectedTagList.children.length < 1) {
         noTagsAlertItem = document.createElement("li");
         noTagsAlertItem.classList.add("no__items__tag", "visible");
-        noTagsAlertItem.textContent = "no collections associated with this recipe";
+        noTagsAlertItem.textContent =
+            "no collections associated with this recipe yet";
         selectedTagList.appendChild(noTagsAlertItem);
     }
 
@@ -116,7 +145,9 @@ export function initUpdateForm(container) {
     }
 
     function tagAlreadySelected(value) {
-        const existing = Array.from(selectedTagList.querySelectorAll(".selected__tag__item__block")).map((el) => el.dataset.valueTitle);
+        const existing = Array.from(
+            selectedTagList.querySelectorAll(".selected__tag__item__block"),
+        ).map((el) => el.dataset.valueTitle);
         return existing.includes(value);
     }
 
@@ -162,19 +193,28 @@ export function initUpdateForm(container) {
         collectionInput.value = "";
     });
 
-    container.querySelectorAll(".update__existing__collection__list .existing__collection__item__button").forEach((btn) => {
-        btn.addEventListener("click", () => processNewTag(btn.dataset.tagTitle));
-    });
+    container
+        .querySelectorAll(
+            ".update__existing__collection__list .existing__collection__item__button",
+        )
+        .forEach((btn) => {
+            btn.addEventListener("click", () =>
+                processNewTag(btn.dataset.tagTitle),
+            );
+        });
 
     // seed hidden form with tags already rendered server-side
     selectedTagList.querySelectorAll(".selected__tag__item").forEach((item) => {
         const block = item.querySelector(".selected__tag__item__block");
         if (!block) return;
         addTagToHiddenForm(block.dataset.valueTitle);
-        item.querySelector(".tag__remove__button")?.addEventListener("click", () => {
-            removeTagFromList(item);
-            removeTagFromHiddenForm(block.dataset.valueTitle);
-        });
+        item.querySelector(".tag__remove__button")?.addEventListener(
+            "click",
+            () => {
+                removeTagFromList(item);
+                removeTagFromHiddenForm(block.dataset.valueTitle);
+            },
+        );
     });
 
     // --- DIRTY STATE ---
@@ -190,7 +230,8 @@ export function initUpdateForm(container) {
     toggleBtn.addEventListener("click", () => {
         const isHidden = formPanel.hidden;
         if (!isHidden && saveBar.classList.contains("is-dirty")) {
-            if (!confirm("You have unsaved changes. Close without saving?")) return;
+            if (!confirm("You have unsaved changes. Close without saving?"))
+                return;
         }
         formPanel.hidden = !isHidden;
         toggleBtn.textContent = isHidden ? "Close editor" : "Edit recipe";
@@ -208,7 +249,7 @@ export function initUpdateForm(container) {
                 method: "PUT",
                 headers: {
                     "Content-Type": "application/x-www-form-urlencoded",
-                    "Accept": "application/json",
+                    Accept: "application/json",
                 },
                 body: new URLSearchParams(new FormData(formEl)).toString(),
             });
@@ -218,20 +259,28 @@ export function initUpdateForm(container) {
                 const recipeCard = container.closest(".recipe__item");
 
                 if (data.title) {
-                    const titleEl = recipeCard.querySelector(".recipe__item__title");
+                    const titleEl = recipeCard.querySelector(
+                        ".recipe__item__title",
+                    );
                     if (titleEl) titleEl.textContent = data.title;
-                    const popoutTitleEl = recipeCard.querySelector(".ingredients__popout__title");
+                    const popoutTitleEl = recipeCard.querySelector(
+                        ".ingredients__popout__title",
+                    );
                     if (popoutTitleEl) popoutTitleEl.textContent = data.title;
                     recipeCard.dataset.title = data.title;
                 }
                 if (data.description !== undefined) {
-                    const descEl = recipeCard.querySelector(".recipe__item__description");
+                    const descEl = recipeCard.querySelector(
+                        ".recipe__item__description",
+                    );
                     if (descEl) descEl.textContent = data.description;
                 }
 
                 // rebuild ingredient toggle buttons so updated list is immediately usable
                 if (data.ingredients) {
-                    const popoutList = recipeCard.querySelector(".ingredients__popout__list");
+                    const popoutList = recipeCard.querySelector(
+                        ".ingredients__popout__list",
+                    );
                     popoutList.innerHTML = "";
                     data.ingredients.forEach((ingredient) => {
                         const li = document.createElement("li");
@@ -243,10 +292,22 @@ export function initUpdateForm(container) {
                         btn.dataset.ingredientName = ingredient.name;
                         btn.textContent = ingredient.name;
                         btn.addEventListener("click", function () {
-                            const hiddenContainer = btn.closest(".ingredients__popout").querySelector(".hidden__ingredients__inputs__container");
+                            const hiddenContainer = btn
+                                .closest(".ingredients__popout")
+                                .querySelector(
+                                    ".hidden__ingredients__inputs__container",
+                                );
                             if (btn.classList.contains("selected")) {
-                                Array.from(hiddenContainer.getElementsByTagName("input")).forEach((input) => {
-                                    if (input.value === btn.dataset.ingredientName) input.remove();
+                                Array.from(
+                                    hiddenContainer.getElementsByTagName(
+                                        "input",
+                                    ),
+                                ).forEach((input) => {
+                                    if (
+                                        input.value ===
+                                        btn.dataset.ingredientName
+                                    )
+                                        input.remove();
                                 });
                                 btn.classList.remove("selected");
                             } else {
@@ -265,11 +326,16 @@ export function initUpdateForm(container) {
 
                 // rebuild tag pills on the recipe card
                 if (data.tags) {
-                    const tagList = recipeCard.querySelector(".single__recipe__collection__list");
+                    const tagList = recipeCard.querySelector(
+                        ".single__recipe__collection__list",
+                    );
                     tagList.innerHTML = "";
                     data.tags.forEach((tag) => {
                         const li = document.createElement("li");
-                        li.classList.add("single__recipe__collection__item", "tag__item");
+                        li.classList.add(
+                            "single__recipe__collection__item",
+                            "tag__item",
+                        );
                         li.dataset.tagName = tag.tag_name;
                         li.textContent = tag.tag_name;
                         tagList.appendChild(li);
@@ -289,13 +355,17 @@ export function initUpdateForm(container) {
     });
 
     // --- FETCH DELETE ---
-    const deleteBtn = container.querySelector(".update__delete__recipe__button");
+    const deleteBtn = container.querySelector(
+        ".update__delete__recipe__button",
+    );
     deleteBtn?.addEventListener("click", async () => {
-        const title = container.querySelector(".update__recipe__title")?.value || "this recipe";
+        const title =
+            container.querySelector(".update__recipe__title")?.value ||
+            "this recipe";
         if (!confirm(`Are you sure you want to delete ${title}?`)) return;
         const response = await fetch(`/recipes/${recipeId}`, {
             method: "DELETE",
-            headers: { "Accept": "application/json" },
+            headers: { Accept: "application/json" },
         });
         if (response.ok) {
             container.closest(".recipe__item").remove();
@@ -304,5 +374,7 @@ export function initUpdateForm(container) {
 }
 
 export function initAllUpdateForms() {
-    document.querySelectorAll(".update__recipe__form__container").forEach(initUpdateForm);
+    document
+        .querySelectorAll(".update__recipe__form__container")
+        .forEach(initUpdateForm);
 }

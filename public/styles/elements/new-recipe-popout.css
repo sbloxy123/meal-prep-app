@@ -147,6 +147,11 @@
     display: flex;
     gap: 5px;
     flex-wrap: wrap;
+    max-width: 500px;
+}
+
+input.update__collection__input {
+    flex-grow: 1;
 }
 
 p.new__collections__add__title {
@@ -158,9 +163,12 @@ p.new__collections__add__title {
 }
 
 .add__recipe__submit {
-    /* margin-top: 1rem;
-    padding: 0.4rem 1rem;
-    letter-spacing: 0.1rem;
-    font-weight: 600; */
     text-transform: uppercase;
+}
+
+.update__ingredient__list {
+    padding-bottom: 1rem;
+}
+.ingredient__input__form {
+    padding-top: 1rem;
 }

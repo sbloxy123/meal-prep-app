@@ -145,7 +145,7 @@ function scripts() {
         noTagsAlertItem.classList.add("no__items__tag");
         noTagsAlertItem.classList.add("visible");
         noTagsAlertItem.innerText =
-            "no collections associated with this recipe";
+            "no collections associated with this recipe yet";
         recipeSelectedTagList.appendChild(noTagsAlertItem);
     }
 
