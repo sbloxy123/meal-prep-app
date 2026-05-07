@@ -194,6 +194,10 @@
     }
 }
 
+.recipe__item.search__hidden {
+    display: none !important;
+}
+
 /* === ADD RECIPE & INGREDIENTS TO SHOPPING LIST === */
 .add__to__cook__list {
     margin: 0.7rem auto 0;

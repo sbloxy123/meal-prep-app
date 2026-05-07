@@ -1,5 +1,15 @@
 @import url("/styles/styles.css");
 
+#recipe__search {
+    display: block;
+    width: 100%;
+    max-width: 400px;
+    margin-bottom: 1rem;
+    &::placeholder {
+        color: rgba(255, 255, 255, 0.5);
+    }
+}
+
 .open__add__recipe__popout__button {
     position: relative;
     display: block;

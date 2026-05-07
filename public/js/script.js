@@ -373,6 +373,10 @@ function scripts() {
             applyFilters();
         });
 
+    const searchInput = document.querySelector("#recipe__search");
+
+    searchInput && searchInput.addEventListener("input", applyFilters);
+
     function applyFilters() {
         const recipeItems = document.querySelectorAll(".recipe__item");
         const activeTagFilters = Array.from(
@@ -383,8 +387,25 @@ function scripts() {
         const favFilterActive =
             favoriteFilterButton &&
             favoriteFilterButton.classList.contains("active");
+        const searchTerm = searchInput
+            ? searchInput.value.trim().toLowerCase()
+            : "";
 
         recipeItems.forEach((recipeItem) => {
+            // search is handled independently via search__hidden
+            if (searchTerm) {
+                const title = (recipeItem.dataset.title || "").toLowerCase();
+                const ingredients = Array.from(
+                    recipeItem.querySelectorAll(".ingredient__button"),
+                ).map((btn) => btn.dataset.ingredientName.toLowerCase());
+                const matchesSearch =
+                    title.includes(searchTerm) ||
+                    ingredients.some((ing) => ing.includes(searchTerm));
+                recipeItem.classList.toggle("search__hidden", !matchesSearch);
+            } else {
+                recipeItem.classList.remove("search__hidden");
+            }
+
             if (activeTagFilters.length === 0 && !favFilterActive) {
                 recipeItem.classList.remove("filtered");
                 return;

@@ -59,7 +59,7 @@ body {
 
 input[type="text"],
 input[type="number"],
-input[type="number"],
+input[type="search"],
 textarea {
     background-color: var(--form-field-bg);
     color: var(--col-type);
