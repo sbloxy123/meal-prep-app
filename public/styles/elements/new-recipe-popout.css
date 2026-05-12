@@ -169,6 +169,20 @@ p.new__collections__add__title {
 .update__ingredient__list {
     padding-bottom: 1rem;
 }
+.ingredient__list__item {
+    /* width: 70%; */
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 8px;
+    border-radius: 4px;
+    margin-block: 5px;
+    background-color: rgba(var(--col-dark-green--opac), 0.3);
+}
+.ingredient__list__label {
+    flex-grow: 1;
+}
 .ingredient__input__form {
     padding-top: 1rem;
 }

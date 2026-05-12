@@ -114,6 +114,26 @@
     }
 }
 
+.custom__product__form__field--textarea {
+    max-width: 100%;
+    flex-direction: column;
+    align-items: flex-start;
+
+    textarea {
+        width: 100%;
+        max-width: 500px;
+        font-size: 16px;
+        padding: 0.5rem;
+        resize: vertical;
+    }
+}
+
+.parse__ingredients__status {
+    font-size: 0.875rem;
+    margin-top: 0.25rem;
+    color: var(--col-primary, green);
+}
+
 .delete__all__form {
     margin-top: 2rem;
 }

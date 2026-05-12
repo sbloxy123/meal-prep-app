@@ -317,6 +317,61 @@ async function organiseShoppingList(req, res, next) {
     }
 }
 
+async function parseIngredientsWithAI(req, res, next) {
+    try {
+        const rawText = req.body.ingredients_text;
+        if (!rawText || !rawText.trim()) {
+            return res.status(400).json({ error: "No ingredients text provided" });
+        }
+
+        const message = await client.messages.create({
+            model: "claude-haiku-4-5-20251001",
+            max_tokens: 1024,
+            messages: [
+                {
+                    role: "user",
+                    content: `You are a helpful shopping assistant. The user has pasted a list of ingredients or shopping items as raw text.
+Parse the text and extract each individual item as a clean, simple string (e.g. "2 chicken breasts", "olive oil", "500g pasta").
+Remove any bullet points, numbers used as list markers, or other formatting characters.
+Return ONLY a JSON array of strings with no other text, markdown, or code fences.
+Example output: ["2 chicken breasts", "olive oil", "500g pasta"]
+Raw text: ${rawText}`,
+                },
+            ],
+        });
+
+        const responseText = message.content[0].text
+            .replace(/^```json\n?/, "")
+            .replace(/\n?```$/, "")
+            .trim();
+
+        let items;
+        try {
+            items = JSON.parse(responseText);
+        } catch {
+            items = JSON.parse(jsonrepair(responseText));
+        }
+
+        if (!Array.isArray(items)) {
+            return res.status(500).json({ error: "Unexpected response format from AI" });
+        }
+
+        const addedItems = [];
+        for (const item of items) {
+            const trimmed = item.trim();
+            if (trimmed) {
+                await db.createCustomProduct(trimmed);
+                const rows = await db.getCustomProductByName(trimmed);
+                if (rows) addedItems.push(rows);
+            }
+        }
+
+        res.json({ success: true, items: addedItems });
+    } catch (error) {
+        next(error);
+    }
+}
+
 module.exports = {
     createShoppingList,
     getShoppingList,
@@ -327,4 +382,5 @@ module.exports = {
     deleteSingleShoppingListItem,
     removeRecipeFromShoppingList,
     organiseShoppingList,
+    parseIngredientsWithAI,
 };

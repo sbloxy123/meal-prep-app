@@ -69,8 +69,16 @@ export function initUpdateForm(container) {
 
                 const editBtn = document.createElement("button");
                 editBtn.type = "button";
-                editBtn.textContent = "Edit";
-                editBtn.classList.add("ingredient__edit__button");
+                // editBtn.textContent = "Edit";
+                editBtn.innerHTML = `<svg viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                <path d="M10 18.1213H19M14.5 1.62132C14.8978 1.2235 15.4374 1 16 1C16.2786 1 16.5544 1.05487 16.8118 1.16148C17.0692 1.26808 17.303 1.42434 17.5 1.62132C17.697 1.8183 17.8532 2.05216 17.9598 2.30953C18.0665 2.5669 18.1213 2.84274 18.1213 3.12132C18.1213 3.3999 18.0665 3.67574 17.9598 3.93311C17.8532 4.19048 17.697 4.42434 17.5 4.62132L5 17.1213L1 18.1213L2 14.1213L14.5 1.62132Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>`;
+
+                editBtn.classList.add("edit__ingredient__item__button");
+                editBtn.classList.add("form__button");
+                editBtn.classList.add("form__button__edit");
+                editBtn.classList.add("reset__button");
+
                 editBtn.addEventListener("click", () => {
                     nameInput.value = name;
                     quantityInput.value = quantity;
@@ -82,8 +90,12 @@ export function initUpdateForm(container) {
 
                 const deleteBtn = document.createElement("button");
                 deleteBtn.type = "button";
-                deleteBtn.textContent = "Delete";
-                deleteBtn.classList.add("ingredient__delete__button");
+                deleteBtn.innerHTML = `<svg viewBox="0 0 16 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M3 18C2.45 18 1.97917 17.8042 1.5875 17.4125C1.19583 17.0208 1 16.55 1 16V3H0V1H5V0H11V1H16V3H15V16C15 16.55 14.8042 17.0208 14.4125 17.4125C14.0208 17.8042 13.55 18 13 18H3ZM13 3H3V16H13V3ZM5 14H7V5H5V14ZM9 14H11V5H9V14Z" fill="currentColor"/>
+                </svg>`;
+                deleteBtn.classList.add("form__button");
+                deleteBtn.classList.add("form__button__delete");
+                deleteBtn.classList.add("reset__button");
                 deleteBtn.addEventListener("click", () => {
                     ingredients.splice(index, 1);
                     renderIngredients();

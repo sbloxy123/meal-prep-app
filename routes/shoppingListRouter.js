@@ -15,6 +15,10 @@ shoppingListRouter.post(
     "/organise",
     shoppingListController.organiseShoppingList,
 );
+shoppingListRouter.post(
+    "/parse-ingredients",
+    shoppingListController.parseIngredientsWithAI,
+);
 
 shoppingListRouter.put("/:id", shoppingListController.updateShoppingListItem);
 

@@ -299,6 +299,14 @@ async function createCustomProduct(customProduct) {
     }
 }
 
+async function getCustomProductByName(customProduct) {
+    const { rows } = await pool.query(
+        "SELECT * FROM shopping_list WHERE custom_product = $1",
+        [customProduct],
+    );
+    return rows[0] || null;
+}
+
 async function updateIngredient(shoppingItemId, newShoppingItemTitle) {
     await pool.query(
         "UPDATE shopping_list SET ingredient_name = $1 WHERE id = $2",
@@ -439,4 +447,5 @@ module.exports = {
     toggleCollected,
     setRecipeFavorite,
     deleteProductItemBoth,
+    getCustomProductByName,
 };
