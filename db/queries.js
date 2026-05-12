@@ -407,7 +407,7 @@ async function deleteProductItemBoth(productId, productName) {
         productId,
     ]);
     await pool.query(
-        "DELETE FROM shopping_list WHERE custom_product = $1 OR ingredient_name = $1",
+        "DELETE FROM shopping_list WHERE LOWER(custom_product) = LOWER($1) OR LOWER(ingredient_name) = LOWER($1)",
         [productName],
     );
 }
