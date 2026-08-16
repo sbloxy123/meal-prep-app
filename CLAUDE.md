@@ -61,16 +61,18 @@ Pure JSON REST API — Express + PostgreSQL. No ORM, no templating engine.
 ### Middleware order in app.js (important)
 
 ```
-BetterAuth intercept  ← must be first: reads raw body & sets its own CORS headers
-cors()                ← runs for all non-auth routes
+OPTIONS middleware     ← cors() for ALL preflight requests (BetterAuth returns 404 for OPTIONS)
+BetterAuth intercept  ← non-OPTIONS /api/auth/* only: reads raw body & sets its own CORS headers
+cors()                ← runs for all non-auth, non-OPTIONS routes
 express.json()        ← body parsing for API routes
 routers
 error handler
 ```
 
-BetterAuth must intercept `/api/auth/*` **before** both `cors()` and `express.json()`:
-- `express.json()` consumes the raw body stream; BetterAuth reads the stream itself and will get an empty body if it runs after.
-- `cors()` sets `Access-Control-Allow-Origin`; BetterAuth also sets this header for its own routes via `trustedOrigins`. Double-setting causes a 500. BetterAuth handles CORS for auth routes; `cors()` handles it for everything else.
+Three constraints drive this order:
+1. **BetterAuth returns 404 for OPTIONS** — preflight must be handled by a plain `cors()` middleware check before BetterAuth sees the request. Express 5 doesn't allow bare `*` in `app.options()`, so this is done via `app.use((req, res, next) => { if (req.method === "OPTIONS") return corsMiddleware(...) })`.
+2. **`express.json()` consumes the body stream** — BetterAuth reads the raw stream itself, so it must run before `express.json()`.
+3. **Double CORS headers cause a 500** — BetterAuth sets `Access-Control-Allow-Origin` via `trustedOrigins` on its own responses. The `cors()` middleware must not also run for non-OPTIONS auth requests, or the header is set twice.
 
 ### Feature routers
 

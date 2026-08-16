@@ -10,9 +10,21 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
     ? process.env.ALLOWED_ORIGINS.split(",")
     : ["http://localhost:3000"];
 
-// BetterAuth must run before CORS and body parsing:
+const corsMiddleware = cors({ origin: allowedOrigins, credentials: true });
+
+// OPTIONS preflight must be answered by cors() for every route — including
+// /api/auth/* — because BetterAuth's handler returns 404 for OPTIONS requests.
+// cors() sends the preflight response and stops; BetterAuth never sees it.
+// (Express 5 doesn't allow bare * in app.options(), so we use middleware.)
+app.use((req, res, next) => {
+    if (req.method === "OPTIONS") return corsMiddleware(req, res, next);
+    next();
+});
+
+// For non-OPTIONS requests to /api/auth/*, BetterAuth intercepts before
+// cors() and express.json() because:
 // - it reads the raw body stream itself (express.json() would consume it first)
-// - it sets its own CORS headers via trustedOrigins (double-headers cause a 500)
+// - it sets its own CORS headers, so cors() must not also run for these requests
 app.use((req, res, next) => {
     if (req.url.startsWith("/api/auth")) {
         return toNodeHandler(auth)(req, res);
@@ -20,11 +32,8 @@ app.use((req, res, next) => {
     next();
 });
 
-// CORS for all other routes (BetterAuth handles its own via trustedOrigins)
-app.use(cors({
-    origin: allowedOrigins,
-    credentials: true,
-}));
+// CORS + body parsing for all remaining (non-auth) routes
+app.use(corsMiddleware);
 
 app.use(express.json());
 
