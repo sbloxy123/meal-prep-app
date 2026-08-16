@@ -1,2 +1,2 @@
 [deploy]
-startCommand = "npm run migrate:up && node app.js"
+startCommand = "npm run migrate:up && node scripts/claim-recipes.js && node app.js"
