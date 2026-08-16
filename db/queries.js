@@ -1,13 +1,14 @@
 const pool = require("./pool");
 
-async function getAllRecipes() {
-    const { rows } = await pool.query("SELECT * FROM recipes ORDER BY id");
+async function getAllRecipes(userId) {
+    const { rows } = await pool.query(
+        "SELECT * FROM recipes WHERE user_id = $1 ORDER BY id",
+        [userId],
+    );
     return rows;
 }
 
 async function createSingleTag(tagTitle) {
-    // console.log("running createSingleTag for: ", tagTitle);
-
     const { rows } = await pool.query("SELECT * FROM tags WHERE name = $1", [
         tagTitle,
     ]);
@@ -37,7 +38,7 @@ async function createSingleIngredient(ingredient) {
     return rows[0].id;
 }
 
-async function createRecipe(data) {
+async function createRecipe(data, userId) {
     const {
         recipe_title,
         recipe_description,
@@ -61,7 +62,7 @@ async function createRecipe(data) {
 
     try {
         const { rows } = await pool.query(
-            "INSERT INTO recipes (title, description, instructions, link_url, prep_time_minutes, cook_time_minutes) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+            "INSERT INTO recipes (title, description, instructions, link_url, prep_time_minutes, cook_time_minutes, user_id) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
             [
                 recipe_title,
                 recipe_description,
@@ -69,6 +70,7 @@ async function createRecipe(data) {
                 recipe_link_url,
                 prep_time_minutes,
                 cook_time_minutes,
+                userId,
             ],
         );
         const recipeId = rows[0].id;
@@ -96,14 +98,18 @@ async function createRecipe(data) {
     }
 }
 
-async function deleteRecipe(recipeId) {
-    await pool.query("DELETE FROM recipes WHERE id = $1", [recipeId]);
+async function deleteRecipe(recipeId, userId) {
+    await pool.query("DELETE FROM recipes WHERE id = $1 AND user_id = $2", [
+        recipeId,
+        userId,
+    ]);
 }
 
-async function findOneRecipe(recipeId) {
-    const { rows } = await pool.query("SELECT * FROM recipes WHERE id = $1", [
-        recipeId,
-    ]);
+async function findOneRecipe(recipeId, userId) {
+    const { rows } = await pool.query(
+        "SELECT * FROM recipes WHERE id = $1 AND user_id = $2",
+        [recipeId, userId],
+    );
     return rows[0];
 }
 
@@ -114,26 +120,37 @@ async function getRecipeIngredients(recipeId) {
     );
     return rows;
 }
+
 async function getAllTags() {
     const { rows } = await pool.query("SELECT * FROM tags");
     return rows;
 }
-async function getSingleRecipeTags() {
+
+async function getSingleRecipeTags(userId) {
     const { rows } = await pool.query(
-        "SELECT recipes.title AS tag_recipe_title, tags.name FROM recipe_tags INNER JOIN recipes ON recipes.id = recipe_tags.recipe_id INNER JOIN tags ON tags.id = recipe_tags.tag_id;",
-    );
-    return rows;
-}
-async function getSingleRecipeIngredients() {
-    const { rows } = await pool.query(
-        "SELECT title AS recipe_title, ingredients.name AS ingredient, ingredients.id AS ingredient_id, recipe_ingredients.quantity, recipe_ingredients.unit FROM recipe_ingredients INNER JOIN recipes ON recipes.id = recipe_ingredients.recipe_id INNER JOIN ingredients ON ingredients.id = recipe_ingredients.ingredient_id;",
+        `SELECT recipes.title AS tag_recipe_title, tags.name
+         FROM recipe_tags
+         INNER JOIN recipes ON recipes.id = recipe_tags.recipe_id
+         INNER JOIN tags ON tags.id = recipe_tags.tag_id
+         WHERE recipes.user_id = $1;`,
+        [userId],
     );
     return rows;
 }
 
-async function updateRecipe(data, recipeId) {
-    console.log("updating recipe .....");
+async function getSingleRecipeIngredients(userId) {
+    const { rows } = await pool.query(
+        `SELECT title AS recipe_title, ingredients.name AS ingredient, ingredients.id AS ingredient_id, recipe_ingredients.quantity, recipe_ingredients.unit
+         FROM recipe_ingredients
+         INNER JOIN recipes ON recipes.id = recipe_ingredients.recipe_id
+         INNER JOIN ingredients ON ingredients.id = recipe_ingredients.ingredient_id
+         WHERE recipes.user_id = $1;`,
+        [userId],
+    );
+    return rows;
+}
 
+async function updateRecipe(data, recipeId, userId) {
     try {
         const {
             recipe_title,
@@ -149,10 +166,10 @@ async function updateRecipe(data, recipeId) {
         } = data;
 
         await pool.query(
-            `UPDATE recipes 
-     SET title = $1, description = $2, instructions = $3, 
-         link_url = $4, prep_time_minutes = $5, cook_time_minutes = $6
-     WHERE id = $7`,
+            `UPDATE recipes
+             SET title = $1, description = $2, instructions = $3,
+                 link_url = $4, prep_time_minutes = $5, cook_time_minutes = $6
+             WHERE id = $7 AND user_id = $8`,
             [
                 recipe_title,
                 recipe_description,
@@ -161,6 +178,7 @@ async function updateRecipe(data, recipeId) {
                 prep_time_minutes,
                 cook_time_minutes,
                 recipeId,
+                userId,
             ],
         );
         await pool.query(
@@ -215,23 +233,27 @@ async function getRecipeTags(recipeId) {
 
 // ========= SHOPPING LIST & MENU QUERIES ========= //
 
-async function getShoppingListIngredientsByRecipe() {
+async function getShoppingListIngredientsByRecipe(userId) {
     const { rows } = await pool.query(
-        "SELECT shopping_list_recipes.recipe_id, shopping_list.ingredient_name FROM shopping_list INNER JOIN shopping_list_recipes ON shopping_list.id = shopping_list_recipes.shopping_list_id WHERE shopping_list.ingredient_name IS NOT NULL",
+        `SELECT shopping_list_recipes.recipe_id, shopping_list.ingredient_name
+         FROM shopping_list
+         INNER JOIN shopping_list_recipes ON shopping_list.id = shopping_list_recipes.shopping_list_id
+         WHERE shopping_list.ingredient_name IS NOT NULL AND shopping_list.user_id = $1`,
+        [userId],
     );
     return rows;
 }
 
-async function createSingleRecipeShoppingListItem(ingredientName, recipeId) {
+async function createSingleRecipeShoppingListItem(ingredientName, recipeId, userId) {
     const { rows } = await pool.query(
-        "SELECT * FROM shopping_list WHERE ingredient_name = $1",
-        [ingredientName],
+        "SELECT * FROM shopping_list WHERE ingredient_name = $1 AND user_id = $2",
+        [ingredientName, userId],
     );
 
     if (rows.length < 1) {
         const ingredient = await pool.query(
-            "INSERT INTO shopping_list (custom_product, ingredient_name) VALUES (null, $1) RETURNING id;",
-            [ingredientName],
+            "INSERT INTO shopping_list (custom_product, ingredient_name, user_id) VALUES (null, $1, $2) RETURNING id;",
+            [ingredientName, userId],
         );
         await pool.query(
             "INSERT INTO shopping_list_recipes (shopping_list_id, recipe_id) VALUES ($1, $2)",
@@ -245,85 +267,96 @@ async function createSingleRecipeShoppingListItem(ingredientName, recipeId) {
     }
 }
 
-async function allRecipesOnMenu() {
+async function allRecipesOnMenu(userId) {
     const { rows } = await pool.query(
-        "SELECT * FROM recipes WHERE is_on_menu = true",
+        "SELECT * FROM recipes WHERE is_on_menu = true AND user_id = $1",
+        [userId],
     );
     return rows;
 }
 
-async function addRecipeToMenu(recipeId) {
+async function addRecipeToMenu(recipeId, userId) {
     await pool.query(
-        "UPDATE recipes SET is_on_menu = true WHERE recipes.id = $1;",
-        [recipeId],
+        "UPDATE recipes SET is_on_menu = true WHERE recipes.id = $1 AND user_id = $2;",
+        [recipeId, userId],
     );
 }
 
-async function createShoppingList(recipeIngredientNames) {
-    await Promise.all(
-        recipeIngredientNames.ingredients.map((ingredientName) =>
+async function createShoppingList(recipeIngredientNames, userId) {
+    await Promise.all([
+        ...recipeIngredientNames.ingredients.map((ingredientName) =>
             createSingleRecipeShoppingListItem(
                 ingredientName,
                 recipeIngredientNames.recipeId,
+                userId,
             ),
         ),
-        addRecipeToMenu(recipeIngredientNames.recipeId),
-    );
+        addRecipeToMenu(recipeIngredientNames.recipeId, userId),
+    ]);
 }
 
-async function getShoppingListItems() {
+async function getShoppingListItems(userId) {
     const { rows } = await pool.query(
-        "SELECT shopping_list.*, COUNT(shopping_list_recipes.id) AS recipe_count FROM shopping_list LEFT JOIN shopping_list_recipes ON shopping_list.id = shopping_list_recipes.shopping_list_id GROUP BY shopping_list.id ORDER BY shopping_list.id;",
+        `SELECT shopping_list.*, COUNT(shopping_list_recipes.id) AS recipe_count
+         FROM shopping_list
+         LEFT JOIN shopping_list_recipes ON shopping_list.id = shopping_list_recipes.shopping_list_id
+         WHERE shopping_list.user_id = $1
+         GROUP BY shopping_list.id
+         ORDER BY shopping_list.id;`,
+        [userId],
     );
     return rows;
 }
 
-async function deleteShoppingList() {
-    await pool.query("DELETE FROM shopping_list");
+async function deleteShoppingList(userId) {
+    await pool.query("DELETE FROM shopping_list WHERE user_id = $1", [userId]);
 }
 
-async function removeIsOnMenuRecipes() {
-    await pool.query("UPDATE recipes SET is_on_menu = false");
+async function removeIsOnMenuRecipes(userId) {
+    await pool.query("UPDATE recipes SET is_on_menu = false WHERE user_id = $1", [userId]);
 }
-async function createCustomProduct(customProduct) {
+
+async function createCustomProduct(customProduct, userId) {
     const { rows } = await pool.query(
-        "SELECT * FROM shopping_list WHERE custom_product = $1",
-        [customProduct],
+        "SELECT * FROM shopping_list WHERE custom_product = $1 AND user_id = $2",
+        [customProduct, userId],
     );
 
     if (rows.length < 1) {
         await pool.query(
-            "INSERT INTO shopping_list (custom_product, ingredient_name) VALUES ($1, null);",
-            [customProduct],
+            "INSERT INTO shopping_list (custom_product, ingredient_name, user_id) VALUES ($1, null, $2);",
+            [customProduct, userId],
         );
     }
 }
 
-async function getCustomProductByName(customProduct) {
+async function getCustomProductByName(customProduct, userId) {
     const { rows } = await pool.query(
-        "SELECT * FROM shopping_list WHERE custom_product = $1",
-        [customProduct],
+        "SELECT * FROM shopping_list WHERE custom_product = $1 AND user_id = $2",
+        [customProduct, userId],
     );
     return rows[0] || null;
 }
 
-async function updateIngredient(shoppingItemId, newShoppingItemTitle) {
+async function updateIngredient(shoppingItemId, newShoppingItemTitle, userId) {
     await pool.query(
-        "UPDATE shopping_list SET ingredient_name = $1 WHERE id = $2",
-        [newShoppingItemTitle, shoppingItemId],
-    );
-}
-async function updateCustomProduct(customProductId, customProduct) {
-    await pool.query(
-        "UPDATE shopping_list SET custom_product = $1 WHERE id = $2",
-        [customProduct, customProductId],
+        "UPDATE shopping_list SET ingredient_name = $1 WHERE id = $2 AND user_id = $3",
+        [newShoppingItemTitle, shoppingItemId, userId],
     );
 }
 
-async function removeSingleShoppingListItem(shoppingListItemId) {
-    await pool.query("DELETE FROM shopping_list WHERE id = $1", [
-        shoppingListItemId,
-    ]);
+async function updateCustomProduct(customProductId, customProduct, userId) {
+    await pool.query(
+        "UPDATE shopping_list SET custom_product = $1 WHERE id = $2 AND user_id = $3",
+        [customProduct, customProductId, userId],
+    );
+}
+
+async function removeSingleShoppingListItem(shoppingListItemId, userId) {
+    await pool.query(
+        "DELETE FROM shopping_list WHERE id = $1 AND user_id = $2",
+        [shoppingListItemId, userId],
+    );
 }
 
 async function checkForDuplicateIngredients(recipeIngredient) {
@@ -334,11 +367,11 @@ async function checkForDuplicateIngredients(recipeIngredient) {
     return parseInt(ingredientCount.rows[0].count);
 }
 
-async function removeRecipeFromShoppingList(recipeId) {
+async function removeRecipeFromShoppingList(recipeId, userId) {
     try {
         await pool.query(
-            "UPDATE recipes SET is_on_menu = false WHERE id = $1 ",
-            [recipeId],
+            "UPDATE recipes SET is_on_menu = false WHERE id = $1 AND user_id = $2",
+            [recipeId, userId],
         );
 
         const { rows: recipesShoppingListItemIdsRows } = await pool.query(
@@ -350,7 +383,10 @@ async function removeRecipeFromShoppingList(recipeId) {
                 row.shopping_list_id,
             );
             if (ingredientCount < 2) {
-                await removeSingleShoppingListItem(row.shopping_list_id);
+                await pool.query(
+                    "DELETE FROM shopping_list WHERE id = $1 AND user_id = $2",
+                    [row.shopping_list_id, userId],
+                );
             }
         }
 
@@ -364,25 +400,29 @@ async function removeRecipeFromShoppingList(recipeId) {
     }
 }
 
-async function addSingleItemToGeneratedList(product) {
+async function addSingleItemToGeneratedList(product, userId) {
     await pool.query(
-        "INSERT INTO generated_shopping_list (product_name, aisle_name, recipe_count, is_custom_product, quantity) VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO generated_shopping_list (product_name, aisle_name, recipe_count, is_custom_product, quantity, user_id) VALUES ($1, $2, $3, $4, $5, $6)",
         [
             product.product,
             product.aisle,
             product.recipe_count,
             product.is_custom_product,
             product.quantity,
+            userId,
         ],
     );
 }
 
-async function createShoppingListByAisles(generatedShoppingItems) {
+async function createShoppingListByAisles(generatedShoppingItems, userId) {
     try {
-        await pool.query("DELETE FROM generated_shopping_list");
+        await pool.query(
+            "DELETE FROM generated_shopping_list WHERE user_id = $1",
+            [userId],
+        );
         await Promise.all(
             generatedShoppingItems.items.map((product) =>
-                addSingleItemToGeneratedList(product),
+                addSingleItemToGeneratedList(product, userId),
             ),
         );
     } catch (error) {
@@ -391,32 +431,36 @@ async function createShoppingListByAisles(generatedShoppingItems) {
     }
 }
 
-async function getGeneratedShoppingListItems() {
-    const { rows } = await pool.query("SELECT * FROM generated_shopping_list");
+async function getGeneratedShoppingListItems(userId) {
+    const { rows } = await pool.query(
+        "SELECT * FROM generated_shopping_list WHERE user_id = $1",
+        [userId],
+    );
     return rows;
 }
 
-async function toggleCollected(productId, status) {
+async function toggleCollected(productId, status, userId) {
     await pool.query(
-        "UPDATE generated_shopping_list SET is_collected = $2 WHERE id = $1",
-        [productId, status],
+        "UPDATE generated_shopping_list SET is_collected = $2 WHERE id = $1 AND user_id = $3",
+        [productId, status, userId],
     );
 }
 
-async function setRecipeFavorite(recipeId, favorite) {
-    await pool.query("UPDATE recipes SET favorite = $2 WHERE id = $1", [
-        recipeId,
-        favorite,
-    ]);
+async function setRecipeFavorite(recipeId, favorite, userId) {
+    await pool.query(
+        "UPDATE recipes SET favorite = $2 WHERE id = $1 AND user_id = $3",
+        [recipeId, favorite, userId],
+    );
 }
 
-async function deleteProductItemBoth(productId, productName) {
-    await pool.query("DELETE FROM generated_shopping_list WHERE id = $1", [
-        productId,
-    ]);
+async function deleteProductItemBoth(productId, productName, userId) {
     await pool.query(
-        "DELETE FROM shopping_list WHERE LOWER(custom_product) = LOWER($1) OR LOWER(ingredient_name) = LOWER($1)",
-        [productName],
+        "DELETE FROM generated_shopping_list WHERE id = $1 AND user_id = $2",
+        [productId, userId],
+    );
+    await pool.query(
+        "DELETE FROM shopping_list WHERE (LOWER(custom_product) = LOWER($1) OR LOWER(ingredient_name) = LOWER($1)) AND user_id = $2",
+        [productName, userId],
     );
 }
 

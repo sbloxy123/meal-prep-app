@@ -2,7 +2,7 @@ const db = require("../db/queries");
 
 async function getGeneratedShoppingList(req, res, next) {
     try {
-        const generatedShoppingItems = await db.getGeneratedShoppingListItems();
+        const generatedShoppingItems = await db.getGeneratedShoppingListItems(req.user.id);
 
         const generatedAisles = Array.from(
             new Set(generatedShoppingItems.map((product) => product.aisle_name)),
@@ -21,7 +21,7 @@ async function getGeneratedShoppingList(req, res, next) {
 
 async function markShoppingListItemAsCollected(req, res, next) {
     try {
-        await db.toggleCollected(req.params.id, req.body.is_collected);
+        await db.toggleCollected(req.params.id, req.body.is_collected, req.user.id);
         res.json({ success: true });
     } catch (error) {
         next(error);
@@ -30,7 +30,7 @@ async function markShoppingListItemAsCollected(req, res, next) {
 
 async function deleteShoppingListItemBoth(req, res, next) {
     try {
-        await db.deleteProductItemBoth(req.body.productId, req.body.productName);
+        await db.deleteProductItemBoth(req.body.productId, req.body.productName, req.user.id);
         res.json({ success: true });
     } catch (error) {
         next(error);
