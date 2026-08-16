@@ -1,43 +1,31 @@
 const db = require("../db/queries");
 const { recipeSchema } = require("../schemas/recipe.schema.js");
 
-// get all recipes
 async function getRecipes(req, res, next) {
     try {
-        const allRecipes = await db.getAllRecipes();
-        const allTags = await db.getAllTags();
-        const singleRecipeTags = await db.getSingleRecipeTags();
-        const singleRecipeIngredients = await db.getSingleRecipeIngredients();
-        const shoppingListIngredientsByRecipe =
-            await db.getShoppingListIngredientsByRecipe();
+        const [allRecipes, allTags, singleRecipeTags, singleRecipeIngredients, shoppingListIngredientsByRecipe] =
+            await Promise.all([
+                db.getAllRecipes(),
+                db.getAllTags(),
+                db.getSingleRecipeTags(),
+                db.getSingleRecipeIngredients(),
+                db.getShoppingListIngredientsByRecipe(),
+            ]);
 
-        // console.log(shoppingListIngredientsByRecipe);
-        // console.log(singleRecipeIngredients);
-
-        console.log(allRecipes[0]);
-
-        res.render("index", {
-            recipesPageTitle: "Our recipes",
-            recipeItems: allRecipes,
-            allTags,
-            singleRecipeTags,
-            singleRecipeIngredients,
+        res.json({
+            recipes: allRecipes,
+            tags: allTags,
+            recipeTags: singleRecipeTags,
+            recipeIngredients: singleRecipeIngredients,
             shoppingListIngredientsByRecipe,
         });
     } catch (error) {
-        console.error(error);
         next(error);
     }
 }
 
-// create recipe
 async function createRecipe(req, res, next) {
     try {
-        const allRecipes = await db.getAllRecipes();
-        const allTags = await db.getAllTags();
-        const singleRecipeTags = await db.getSingleRecipeTags();
-        const singleRecipeIngredients = await db.getSingleRecipeIngredients();
-
         const formData = {
             ...req.body,
             ingredient_name: [].concat(req.body.ingredient_name || []),
@@ -47,17 +35,9 @@ async function createRecipe(req, res, next) {
         };
 
         const result = recipeSchema.safeParse(formData);
-        // console.log("parsed schema result: ", result);
 
         if (!result.success) {
-            return res.status(400).render("index", {
-                errors: result.error.flatten().fieldErrors,
-                oldData: req.body,
-                recipeItems: allRecipes,
-                allTags,
-                singleRecipeTags,
-                singleRecipeIngredients,
-            });
+            return res.status(400).json({ errors: result.error.flatten().fieldErrors });
         }
 
         const data = result.data;
@@ -67,23 +47,18 @@ async function createRecipe(req, res, next) {
         }
 
         await db.createRecipe(data);
-
-        res.redirect("/");
+        res.status(201).json({ success: true });
     } catch (error) {
-        console.error(error);
         next(error);
     }
 }
+
 async function deleteRecipe(req, res, next) {
     try {
         const recipeId = req.params.id;
         await db.deleteRecipe(recipeId);
-        if (req.headers.accept?.includes("application/json")) {
-            return res.sendStatus(200);
-        }
-        res.redirect("/");
+        res.sendStatus(204);
     } catch (error) {
-        console.error(error);
         next(error);
     }
 }
@@ -91,43 +66,22 @@ async function deleteRecipe(req, res, next) {
 async function showSingleRecipe(req, res, next) {
     try {
         const recipeId = req.params.id;
-        const selectedRecipe = await db.findOneRecipe(recipeId);
-        const recipeIngredients = await db.getRecipeIngredients(recipeId);
-        const recipeTags = await db.getRecipeTags(recipeId);
+        const [selectedRecipe, recipeIngredients, recipeTags] = await Promise.all([
+            db.findOneRecipe(recipeId),
+            db.getRecipeIngredients(recipeId),
+            db.getRecipeTags(recipeId),
+        ]);
 
-        const fullRecipe = {
+        if (!selectedRecipe) {
+            return res.status(404).json({ error: "Recipe not found" });
+        }
+
+        res.json({
             ...selectedRecipe,
             recipe_ingredients: recipeIngredients,
             recipe_tags: recipeTags,
-        };
-
-        res.render("singleRecipe", {
-            editRecipesTitle: "Edit recipe",
-            selectedRecipe: fullRecipe,
         });
     } catch (error) {
-        console.error(error);
-        next(error);
-    }
-}
-
-async function getUpdateRecipeForm(req, res, next) {
-    try {
-        const recipeId = req.params.id;
-        const selectedRecipe = await db.findOneRecipe(recipeId);
-        const recipeIngredients = await db.getRecipeIngredients(recipeId);
-        const recipeTags = await db.getRecipeTags(recipeId);
-        const allTags = await db.getAllTags();
-        // console.log(recipeTags);
-
-        res.render("updateRecipe", {
-            selectedRecipe,
-            recipeIngredients,
-            recipeTags,
-            allTags,
-        });
-    } catch (error) {
-        console.error(error);
         next(error);
     }
 }
@@ -146,14 +100,7 @@ async function updateRecipe(req, res, next) {
         const result = recipeSchema.safeParse(formData);
 
         if (!result.success) {
-            return res.status(400).render("index", {
-                errors: result.error.flatten().fieldErrors,
-                oldData: req.body,
-                recipeItems: allRecipes,
-                allTags,
-                singleRecipeTags,
-                singleRecipeIngredients,
-            });
+            return res.status(400).json({ errors: result.error.flatten().fieldErrors });
         }
 
         const data = result.data;
@@ -164,23 +111,19 @@ async function updateRecipe(req, res, next) {
 
         await db.updateRecipe(data, recipeId);
 
-        if (req.headers.accept?.includes("application/json")) {
-            const [updatedIngredients, updatedTags] = await Promise.all([
-                db.getRecipeIngredients(recipeId),
-                db.getRecipeTags(recipeId),
-            ]);
-            return res.json({
-                ok: true,
-                title: data.recipe_title,
-                description: data.recipe_description,
-                ingredients: updatedIngredients,
-                tags: updatedTags,
-            });
-        }
+        const [updatedIngredients, updatedTags] = await Promise.all([
+            db.getRecipeIngredients(recipeId),
+            db.getRecipeTags(recipeId),
+        ]);
 
-        res.redirect(`/recipes/${recipeId}`);
+        res.json({
+            ok: true,
+            title: data.recipe_title,
+            description: data.recipe_description,
+            ingredients: updatedIngredients,
+            tags: updatedTags,
+        });
     } catch (error) {
-        console.error(error);
         next(error);
     }
 }
@@ -201,7 +144,6 @@ module.exports = {
     showSingleRecipe,
     createRecipe,
     deleteRecipe,
-    getUpdateRecipeForm,
     updateRecipe,
     markRecipeAsFavorite,
 };

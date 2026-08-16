@@ -1,29 +1,48 @@
 require("dotenv").config();
 
 const express = require("express");
+const cors = require("cors");
+const { toNodeHandler } = require("better-auth/node");
+const { auth } = require("./lib/auth");
 const app = express();
-app.use(express.urlencoded({ extended: true }));
+
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+    ? process.env.ALLOWED_ORIGINS.split(",")
+    : ["http://localhost:3000"];
+
+// BetterAuth must run before CORS and body parsing:
+// - it reads the raw body stream itself (express.json() would consume it first)
+// - it sets its own CORS headers via trustedOrigins (double-headers cause a 500)
+app.use((req, res, next) => {
+    if (req.url.startsWith("/api/auth")) {
+        return toNodeHandler(auth)(req, res);
+    }
+    next();
+});
+
+// CORS for all other routes (BetterAuth handles its own via trustedOrigins)
+app.use(cors({
+    origin: allowedOrigins,
+    credentials: true,
+}));
+
 app.use(express.json());
-const path = require("node:path");
 
 const recipesRouter = require("./routes/recipesRouter");
 const shoppingListRouter = require("./routes/shoppingListRouter");
 const generatedShoppingListRouter = require("./routes/generatedShoppingListRouter");
 const initializeDatabase = require("./db/init");
 
-app.set("views", path.join(__dirname, "views"));
-app.set("view engine", "ejs");
-
-const assetsPath = path.join(__dirname, "public");
-app.use(express.static(assetsPath));
-
-const methodOverride = require("method-override");
-app.use(methodOverride("_method"));
-
 app.use("/shopping-list", shoppingListRouter);
 app.use("/recipes", recipesRouter);
 app.use("/generated-shopping-list", generatedShoppingListRouter);
-app.get("/", (req, res) => res.redirect("/recipes"));
+
+app.get("/", (req, res) => res.json({ status: "ok" }));
+
+app.use((err, req, res, next) => {
+    console.error(err);
+    res.status(500).json({ error: err.message ?? "Internal server error" });
+});
 
 const PORT = process.env.PORT || 3001;
 

@@ -12,67 +12,44 @@ const {
 
 async function createShoppingList(req, res, next) {
     try {
-        const allRecipes = await db.getAllRecipes();
-        const allTags = await db.getAllTags();
-        const singleRecipeTags = await db.getSingleRecipeTags();
-        const singleRecipeIngredients = await db.getSingleRecipeIngredients();
-
-        // move this to a middleware later - /middleware/validate.js
-        // console.log("req.body: ", req.body);
-
         const formData = {
             ingredients: [].concat(req.body.ingredients || []),
             recipeId: req.body.recipeId,
         };
         const result = recipeShoppingListSchema.safeParse(formData);
-        // console.log("parsed schema result: ", result);
 
         if (!result.success) {
-            return res.status(400).render("index", {
-                errors: result.error.flatten().fieldErrors,
-                oldData: req.body,
-                recipesPageTitle: "Our recipes",
-                recipeItems: allRecipes,
-                allTags,
-                singleRecipeTags,
-                singleRecipeIngredients,
-            });
+            return res.status(400).json({ errors: result.error.flatten().fieldErrors });
         }
 
-        const data = result.data;
-        // console.log("shopping list ingredients data", data);
-        await db.createShoppingList(data);
-
-        res.redirect("/");
+        await db.createShoppingList(result.data);
+        res.status(201).json({ success: true });
     } catch (error) {
-        console.error(error);
         next(error);
     }
 }
 
 async function getShoppingList(req, res, next) {
-    const allRecipesOnMenu = await db.allRecipesOnMenu();
-    const singleRecipeIngredients = await db.getSingleRecipeIngredients();
-    const singleRecipeTags = await db.getSingleRecipeTags();
-    const allTags = await db.getAllTags();
-    const shoppingList = await db.getShoppingListItems();
-    const shoppingListIngredientsByRecipe =
-        await db.getShoppingListIngredientsByRecipe();
-
-    // todo - set up api to pull in data from google keep?
-
     try {
-        res.render("shoppingList", {
-            shoppingListPageTitle: "Shopping Items",
-            shoppingList: shoppingList,
-            allRecipesOnMenu: allRecipesOnMenu,
-            singleRecipeIngredients: singleRecipeIngredients,
-            singleRecipeTags: singleRecipeTags,
+        const [shoppingList, allRecipesOnMenu, singleRecipeIngredients, singleRecipeTags, allTags, shoppingListIngredientsByRecipe] =
+            await Promise.all([
+                db.getShoppingListItems(),
+                db.allRecipesOnMenu(),
+                db.getSingleRecipeIngredients(),
+                db.getSingleRecipeTags(),
+                db.getAllTags(),
+                db.getShoppingListIngredientsByRecipe(),
+            ]);
+
+        res.json({
+            shoppingList,
+            allRecipesOnMenu,
+            singleRecipeIngredients,
+            singleRecipeTags,
             allTags,
             shoppingListIngredientsByRecipe,
         });
     } catch (error) {
-        console.error(error);
         next(error);
     }
 }
@@ -81,42 +58,24 @@ async function deleteShoppingList(req, res, next) {
     try {
         await db.deleteShoppingList();
         await db.removeIsOnMenuRecipes();
-        res.redirect("/");
+        res.json({ success: true });
     } catch (error) {
-        console.error(error);
         next(error);
     }
 }
 
 async function createCustomProduct(req, res, next) {
     try {
-        const allRecipes = await db.getAllRecipes();
-        const allTags = await db.getAllTags();
-        const singleRecipeTags = await db.getSingleRecipeTags();
-        const singleRecipeIngredients = await db.getSingleRecipeIngredients();
-
-        const formData = {
-            custom_product: req.body.custom_product,
-        };
+        const formData = { custom_product: req.body.custom_product };
         const result = customProductSchema.safeParse(formData);
 
         if (!result.success) {
-            return res.status(400).render("index", {
-                errors: result.error.flatten().fieldErrors,
-                oldData: req.body,
-                recipesPageTitle: "Our recipes",
-                recipeItems: allRecipes,
-                allTags,
-                singleRecipeTags,
-                singleRecipeIngredients,
-            });
+            return res.status(400).json({ errors: result.error.flatten().fieldErrors });
         }
-        const data = result.data;
 
-        await db.createCustomProduct(data.custom_product);
-        res.redirect("/shopping-list");
+        await db.createCustomProduct(result.data.custom_product);
+        res.status(201).json({ success: true });
     } catch (error) {
-        console.error(error);
         next(error);
     }
 }
@@ -129,14 +88,9 @@ async function updateCustomProductItem(req, res, next) {
         };
         const result = customProductSchema.safeParse(formData);
 
-        const data = result.data;
-        await db.updateCustomProduct(
-            data.custom_product_id,
-            data.custom_product,
-        );
-        res.redirect("/shopping-list");
+        await db.updateCustomProduct(result.data.custom_product_id, result.data.custom_product);
+        res.json({ success: true });
     } catch (error) {
-        console.error(error);
         next(error);
     }
 }
@@ -149,38 +103,28 @@ async function updateShoppingListItem(req, res, next) {
         };
         const result = recipeIngredientSchema.safeParse(formData);
 
-        const data = result.data;
-        await db.updateIngredient(data.ingredient_id, data.ingredient_name);
-        res.redirect("/shopping-list");
+        await db.updateIngredient(result.data.ingredient_id, result.data.ingredient_name);
+        res.json({ success: true });
     } catch (error) {
-        console.error(error);
         next(error);
     }
 }
 
 async function deleteSingleShoppingListItem(req, res, next) {
     try {
-        const formData = {
-            shoppingItemId: req.params.id,
-        };
-        const result = shoppingListItemSchema.safeParse(formData);
-        const data = result.data;
-        // console.log(data);
-        await db.removeSingleShoppingListItem(data.shoppingItemId);
-        res.redirect("/shopping-list");
+        const result = shoppingListItemSchema.safeParse({ shoppingItemId: req.params.id });
+        await db.removeSingleShoppingListItem(result.data.shoppingItemId);
+        res.json({ success: true });
     } catch (error) {
-        console.error(error);
         next(error);
     }
 }
 
 async function removeRecipeFromShoppingList(req, res, next) {
     try {
-        const recipeId = req.params.id;
-        await db.removeRecipeFromShoppingList(recipeId);
-        res.redirect("/");
+        await db.removeRecipeFromShoppingList(req.params.id);
+        res.json({ success: true });
     } catch (error) {
-        console.error(error);
         next(error);
     }
 }
@@ -194,9 +138,6 @@ async function organiseShoppingList(req, res, next) {
             recipe_count: item.recipe_count,
             is_custom_product: item.quantity === 0 || item.quantity === "0",
         }));
-
-        // todo: pull this data into database so it can be stored
-        // ~ idea - add associated meals so user can see what the ingredient is for
 
         const message = await client.messages.create({
             model: "claude-haiku-4-5-20251001",
@@ -224,7 +165,7 @@ async function organiseShoppingList(req, res, next) {
                 },
             ],
         });
-        // res.json({ result: message.content[0].text });
+
         const rawText = message.content[0].text
             .replace(/^```json\n?/, "")
             .replace(/\n?```$/, "")
@@ -239,76 +180,13 @@ async function organiseShoppingList(req, res, next) {
             try {
                 result = JSON.parse(jsonrepair(rawText));
             } catch (repairError) {
-                console.error(
-                    "[organiseShoppingList] JSON parse failed:",
-                    repairError.message,
-                );
-                console.error(
-                    "[organiseShoppingList] Raw text that failed to parse:",
-                    rawText,
-                );
+                console.error("[organiseShoppingList] JSON parse failed:", repairError.message);
                 return res.status(400).json({
                     error: "Failed to parse Claude response as JSON",
                     details: repairError.message,
-                    rawResponse: rawText,
                 });
             }
         }
-
-        // result = {
-        //     items: [
-        //         {
-        //             product: "eggs",
-        //             quantity: "",
-        //             aisle: "Dairy & Eggs",
-        //             recipe_count: 2,
-        //             is_custom_product: false,
-        //         },
-        //         {
-        //             product: "chicken",
-        //             quantity: "",
-        //             aisle: "Fresh Meat & Poultry",
-        //             recipe_count: 1,
-        //             is_custom_product: false,
-        //         },
-        //         {
-        //             product: "Peas",
-        //             quantity: "",
-        //             aisle: "Frozen Vegetables",
-        //             recipe_count: 0,
-        //             is_custom_product: true,
-        //         },
-        //         {
-        //             product: "Pea",
-        //             quantity: "",
-        //             aisle: "Frozen Vegetables",
-        //             recipe_count: 0,
-        //             is_custom_product: true,
-        //         },
-        //         {
-        //             product: "beef",
-        //             quantity: "",
-        //             aisle: "Fresh Meat & Poultry",
-        //             recipe_count: 1,
-        //             is_custom_product: false,
-        //         },
-        //         {
-        //             product: "sausages",
-        //             quantity: "",
-        //             aisle: "Fresh Meat & Poultry",
-        //             recipe_count: 0,
-        //             is_custom_product: true,
-        //         },
-        //         {
-        //             product: "cooking oil",
-        //             quantity: "",
-        //             aisle: "Oils & Condiments",
-        //             recipe_count: 0,
-        //             is_custom_product: true,
-        //         },
-        //     ],
-        // };
-        // console.log(result);
 
         await db.createShoppingListByAisles(result);
         res.json({ success: true });
@@ -361,8 +239,8 @@ Raw text: ${rawText}`,
             const trimmed = item.trim();
             if (trimmed) {
                 await db.createCustomProduct(trimmed);
-                const rows = await db.getCustomProductByName(trimmed);
-                if (rows) addedItems.push(rows);
+                const row = await db.getCustomProductByName(trimmed);
+                if (row) addedItems.push(row);
             }
         }
 
