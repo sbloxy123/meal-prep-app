@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **Branch note:** `main` holds the original server-rendered EJS app (deployed to Railway).
+> `api-refactor` (this branch) is a pure JSON REST API — EJS and static file serving have been removed.
+> The Next.js frontend is a separate repository that calls this API.
+
 ## Commands
 
 ```bash
@@ -20,8 +24,6 @@ There are no tests configured.
 
 ## Environment Variables
 
-Copy `.env` and populate:
-
 ```
 HOST=
 USER=
@@ -29,22 +31,48 @@ DATABASE=
 PASSWORD=
 DATABASE_PORT=
 ANTHROPIC_API_KEY=
-PORT=3001       # optional, defaults to 3001
+
+# Optional — defaults to 3001
+PORT=3001
+
+# Comma-separated frontend origins. No trailing slashes.
+# Production example: https://my-app.vercel.app
+ALLOWED_ORIGINS=http://localhost:3000
+
+# BetterAuth — generate secret with: openssl rand -base64 32
+BETTER_AUTH_SECRET=
+# The URL of this API itself (used by BetterAuth internally)
+BETTER_AUTH_URL=http://localhost:3001
 ```
+
+When deploying to Railway, set all of the above as environment variables in the Railway dashboard. `ALLOWED_ORIGINS` must point to the deployed Next.js URL.
 
 ## Architecture
 
-Express + EJS app with a PostgreSQL backend. No ORM — raw SQL via the `pg` driver.
+Pure JSON REST API — Express + PostgreSQL. No ORM, no templating engine.
 
-**Entry point:** `app.js` — loads `.env`, mounts three routers, runs `db/init.js` at startup before binding the port. The database initializer reads `db/init.sql` and runs it in a transaction; it silently skips `42P07`/`42710` errors (schema already exists) and throws on everything else.
+**Entry point:** `app.js` — middleware order matters here (see CORS / BetterAuth note below), mounts three feature routers, runs `db/init.js` at startup before binding the port.
 
 **Request flow:** `routes/` → `controllers/` → `db/queries.js` → `db/pool.js`
 
 - All SQL is in `db/queries.js` (one file, no query-builder abstraction).
-- Form validation uses Zod schemas defined in `schemas/recipe.schema.js`.
-- HTML forms can submit PUT/DELETE via the `method-override` middleware (`?_method=DELETE`).
+- Input validation uses Zod schemas in `schemas/recipe.schema.js`.
 
-**Three feature areas and their routes:**
+### Middleware order in app.js (important)
+
+```
+BetterAuth intercept  ← must be first: reads raw body & sets its own CORS headers
+cors()                ← runs for all non-auth routes
+express.json()        ← body parsing for API routes
+routers
+error handler
+```
+
+BetterAuth must intercept `/api/auth/*` **before** both `cors()` and `express.json()`:
+- `express.json()` consumes the raw body stream; BetterAuth reads the stream itself and will get an empty body if it runs after.
+- `cors()` sets `Access-Control-Allow-Origin`; BetterAuth also sets this header for its own routes via `trustedOrigins`. Double-setting causes a 500. BetterAuth handles CORS for auth routes; `cors()` handles it for everything else.
+
+### Feature routers
 
 | Router | Mount | Purpose |
 |---|---|---|
@@ -52,25 +80,127 @@ Express + EJS app with a PostgreSQL backend. No ORM — raw SQL via the `pg` dri
 | `shoppingListRouter` | `/shopping-list` | Raw shopping list built from recipe ingredients |
 | `generatedShoppingListRouter` | `/generated-shopping-list` | AI-organised version of the shopping list |
 
-**AI integration** (`@anthropic-ai/sdk`, model `claude-haiku-4-5-20251001`):
-- `POST /shopping-list/organise` — sends the current shopping list to Claude and asks it to group items by UK supermarket aisle; result is stored in `generated_shopping_list`.
-- `POST /shopping-list/parse-ingredients` — accepts raw pasted text and uses Claude to extract individual ingredient strings, then inserts them as custom products.
-- Both endpoints use `jsonrepair` as a fallback when Claude returns slightly malformed JSON.
+### Authentication
+
+BetterAuth (`lib/auth.js`) handles all `/api/auth/*` routes. Enabled plugin: `emailAndPassword`.
+
+Key endpoints (all under `/api/auth`):
+- `POST /sign-up/email` — `{ email, password, name }`
+- `POST /sign-in/email` — `{ email, password }` → sets a `better-auth.session_token` cookie
+- `GET /get-session` — returns `{ session, user }` for the current cookie
+- `POST /sign-out` — clears the session cookie
+
+BetterAuth manages four tables: `user`, `session`, `account`, `verification` — created by `db/migrations/002_better_auth_schema.sql`.
+
+**The API routes are not yet protected by auth middleware.** Adding a session check to protected routes is the next step (see below).
+
+### AI integration
+
+`shoppingListController.js` calls the Anthropic API directly (model `claude-haiku-4-5-20251001`):
+- `POST /shopping-list/organise` — groups the shopping list into UK supermarket aisles; saves result to `generated_shopping_list`.
+- `POST /shopping-list/parse-ingredients` — parses raw pasted text into individual ingredient items.
+- Both use `jsonrepair` as a fallback when Claude returns slightly malformed JSON.
 
 ## Database Schema
 
-Key tables and their relationships:
-
-- `recipes` ↔ `ingredients` via `recipe_ingredients` (quantity, unit stored on the join row)
+Key tables:
+- `recipes` ↔ `ingredients` via `recipe_ingredients` (quantity, unit on the join row)
 - `recipes` ↔ `tags` via `recipe_tags`
-- `shopping_list` ↔ `recipes` via `shopping_list_recipes` (tracks which recipes contributed each item; used to avoid deleting an ingredient that's shared across multiple on-menu recipes)
-- `generated_shopping_list` — independent table populated by the AI organise step; cleared and rebuilt each time
+- `shopping_list` ↔ `recipes` via `shopping_list_recipes` (shared-ingredient dedup logic: only delete a shopping list item if no other recipe on the menu uses it)
+- `generated_shopping_list` — AI-organised list; cleared and rebuilt on each organise call
+- `user`, `session`, `account`, `verification` — BetterAuth tables
 
-`recipes.is_on_menu` marks which recipes are currently on the menu. `recipes.favorite` was added via `db/migrations/001_add_favorite_to_recipes.sql`.
+`recipes.is_on_menu` — whether the recipe is on the current week's menu.
+`recipes.favorite` — added via `db/migrations/001_add_favorite_to_recipes.sql`.
+Ingredient names are normalised to lowercase on insert.
 
-Ingredient names are normalised to lowercase on insert (`ingredient.toLowerCase()` in `createSingleIngredient`). `ingredients` has a unique constraint on `name`, so upserts use `ON CONFLICT (name) DO UPDATE`.
+## Connecting a Next.js Frontend
 
-## Client-Side JS
+### Setup
 
-- `public/js/script.js` — handles the recipe list page: add-to-menu forms, recipe search/filter, new recipe popout, inline edit popout, favorite toggle.
-- `public/js/updateRecipeForm.js` — handles the update recipe form: dynamic ingredient/tag row management and AJAX save that patches the displayed card without a full page reload.
+Install the BetterAuth client in the Next.js project:
+
+```bash
+npm install better-auth
+```
+
+Create `lib/auth-client.ts`:
+
+```ts
+import { createAuthClient } from "better-auth/react";
+
+export const authClient = createAuthClient({
+  baseURL: process.env.NEXT_PUBLIC_API_URL, // e.g. http://localhost:3001
+});
+
+export const { signIn, signUp, signOut, useSession } = authClient;
+```
+
+Set in `.env.local`:
+```
+NEXT_PUBLIC_API_URL=http://localhost:3001
+```
+
+### Making authenticated API calls
+
+BetterAuth sets a `better-auth.session_token` cookie on sign-in. For the browser to send this cookie to the Express API (a different origin), both sides need:
+
+- Express: `cors({ credentials: true })` ✅ already done
+- Next.js fetch calls: `credentials: "include"` on every request
+
+Example fetch wrapper:
+
+```ts
+const apiUrl = process.env.NEXT_PUBLIC_API_URL;
+
+export async function apiFetch(path: string, options?: RequestInit) {
+  const res = await fetch(`${apiUrl}${path}`, {
+    ...options,
+    credentials: "include",    // sends the session cookie cross-origin
+    headers: {
+      "Content-Type": "application/json",
+      ...options?.headers,
+    },
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+```
+
+### Protecting API routes (not yet done)
+
+The Express routes currently have no auth guard. To protect them, create a middleware in `middleware/requireAuth.js`:
+
+```js
+const { auth } = require("../lib/auth");
+const { fromNodeHeaders } = require("better-auth/node");
+
+async function requireAuth(req, res, next) {
+  const session = await auth.api.getSession({
+    headers: fromNodeHeaders(req.headers),
+  });
+  if (!session) return res.status(401).json({ error: "Unauthorised" });
+  req.user = session.user;
+  next();
+}
+
+module.exports = { requireAuth };
+```
+
+Then apply it to any router or individual route:
+
+```js
+const { requireAuth } = require("../middleware/requireAuth");
+
+recipesRouter.get("/", requireAuth, recipesController.getRecipes);
+```
+
+### CORS in production
+
+When the Next.js app is deployed (e.g. Vercel), update `ALLOWED_ORIGINS` on the Railway Express service to include the production URL:
+
+```
+ALLOWED_ORIGINS=https://your-app.vercel.app
+```
+
+BetterAuth also needs `trustedOrigins` to match — this is read from `ALLOWED_ORIGINS` in `lib/auth.js`, so the single env var covers both.
