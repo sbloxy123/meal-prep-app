@@ -2,9 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> **Branch note:** `main` holds the original server-rendered EJS app (deployed to Railway).
-> `api-refactor` (this branch) is a pure JSON REST API — EJS and static file serving have been removed.
-> The Next.js frontend is a separate repository that calls this API.
+> **Branch note:** `main` holds the original server-rendered EJS app (no longer deployed).
+> `api-refactor` (this branch) is a pure JSON REST API and is the live deployed version on Railway.
+> The Next.js frontend lives at `github.com/sbloxy123/meal-prep-frontend` and is deployed on Vercel.
 
 ## Commands
 
@@ -32,11 +32,15 @@ PASSWORD=
 DATABASE_PORT=
 ANTHROPIC_API_KEY=
 
+# Assembled connection string — required by node-pg-migrate and used on Railway
+# (Railway Postgres internal host: postgres.railway.internal)
+DATABASE_URL=postgresql://user:password@host:port/database
+
 # Optional — defaults to 3001
 PORT=3001
 
 # Comma-separated frontend origins. No trailing slashes.
-# Production example: https://my-app.vercel.app
+# Production: https://meal-prep-frontend.vercel.app
 ALLOWED_ORIGINS=http://localhost:3000
 
 # BetterAuth — generate secret with: openssl rand -base64 32
@@ -45,7 +49,7 @@ BETTER_AUTH_SECRET=
 BETTER_AUTH_URL=http://localhost:3001
 ```
 
-When deploying to Railway, set all of the above as environment variables in the Railway dashboard. `ALLOWED_ORIGINS` must point to the deployed Next.js URL.
+When deploying to Railway, set all of the above as environment variables in the Railway dashboard. `ALLOWED_ORIGINS` must point to the deployed Next.js Vercel URL.
 
 ## Architecture
 
@@ -92,7 +96,7 @@ Key endpoints (all under `/api/auth`):
 
 BetterAuth manages four tables: `user`, `session`, `account`, `verification` — created by `db/migrations/002_better_auth_schema.sql`.
 
-**The API routes are not yet protected by auth middleware.** Adding a session check to protected routes is the next step (see below).
+All API routes (`/recipes`, `/shopping-list`, `/generated-shopping-list`) are protected by `middleware/requireAuth.js`, which reads the session from the BetterAuth cookie and sets `req.user`. All queries are scoped to `req.user.id` — users can only see and modify their own data.
 
 ### AI integration
 
@@ -114,93 +118,31 @@ Key tables:
 `recipes.favorite` — added via `db/migrations/001_add_favorite_to_recipes.sql`.
 Ingredient names are normalised to lowercase on insert.
 
-## Connecting a Next.js Frontend
+## Frontend (Next.js)
 
-### Setup
+Repo: `github.com/sbloxy123/meal-prep-frontend` — deployed to `meal-prep-frontend.vercel.app`.
 
-Install the BetterAuth client in the Next.js project:
+### How the frontend connects to this API
 
-```bash
-npm install better-auth
-```
+The frontend proxies all API traffic through Next.js rewrites (in `next.config.ts`) to avoid cross-domain cookie issues with `SameSite=Lax`:
 
-Create `lib/auth-client.ts`:
+| Frontend path | Proxied to |
+|---|---|
+| `/api/auth/*` | `<RAILWAY_URL>/api/auth/*` |
+| `/backend/*` | `<RAILWAY_URL>/*` |
 
-```ts
-import { createAuthClient } from "better-auth/react";
+- BetterAuth client uses no `baseURL` — it hits `/api/auth/*` via the proxy
+- `apiFetch` uses `/backend` as base — e.g. `apiFetch('/recipes')` → `/backend/recipes` → Railway `/recipes`
+- Cookies are set on the Vercel domain (same-origin), so they're sent with every request
 
-export const authClient = createAuthClient({
-  baseURL: process.env.NEXT_PUBLIC_API_URL, // e.g. http://localhost:3001
-});
+### Environment variables (frontend)
 
-export const { signIn, signUp, signOut, useSession } = authClient;
-```
+| Variable | Local | Vercel |
+|---|---|---|
+| `NEXT_PUBLIC_API_URL` | `http://localhost:3001` | `https://meal-prep-app-production-7120.up.railway.app` |
 
-Set in `.env.local`:
-```
-NEXT_PUBLIC_API_URL=http://localhost:3001
-```
+`NEXT_PUBLIC_API_URL` is the proxy **destination** — it's used in `next.config.ts` rewrites, not directly in frontend code.
 
-### Making authenticated API calls
+### CORS
 
-BetterAuth sets a `better-auth.session_token` cookie on sign-in. For the browser to send this cookie to the Express API (a different origin), both sides need:
-
-- Express: `cors({ credentials: true })` ✅ already done
-- Next.js fetch calls: `credentials: "include"` on every request
-
-Example fetch wrapper:
-
-```ts
-const apiUrl = process.env.NEXT_PUBLIC_API_URL;
-
-export async function apiFetch(path: string, options?: RequestInit) {
-  const res = await fetch(`${apiUrl}${path}`, {
-    ...options,
-    credentials: "include",    // sends the session cookie cross-origin
-    headers: {
-      "Content-Type": "application/json",
-      ...options?.headers,
-    },
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-```
-
-### Protecting API routes (not yet done)
-
-The Express routes currently have no auth guard. To protect them, create a middleware in `middleware/requireAuth.js`:
-
-```js
-const { auth } = require("../lib/auth");
-const { fromNodeHeaders } = require("better-auth/node");
-
-async function requireAuth(req, res, next) {
-  const session = await auth.api.getSession({
-    headers: fromNodeHeaders(req.headers),
-  });
-  if (!session) return res.status(401).json({ error: "Unauthorised" });
-  req.user = session.user;
-  next();
-}
-
-module.exports = { requireAuth };
-```
-
-Then apply it to any router or individual route:
-
-```js
-const { requireAuth } = require("../middleware/requireAuth");
-
-recipesRouter.get("/", requireAuth, recipesController.getRecipes);
-```
-
-### CORS in production
-
-When the Next.js app is deployed (e.g. Vercel), update `ALLOWED_ORIGINS` on the Railway Express service to include the production URL:
-
-```
-ALLOWED_ORIGINS=https://your-app.vercel.app
-```
-
-BetterAuth also needs `trustedOrigins` to match — this is read from `ALLOWED_ORIGINS` in `lib/auth.js`, so the single env var covers both.
+`ALLOWED_ORIGINS` on Railway must include the Vercel URL. Currently set to `https://meal-prep-frontend.vercel.app`. `lib/auth.js` reads the same var for BetterAuth `trustedOrigins`.
