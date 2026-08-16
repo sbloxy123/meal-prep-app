@@ -32,10 +32,11 @@ const recipesRouter = require("./routes/recipesRouter");
 const shoppingListRouter = require("./routes/shoppingListRouter");
 const generatedShoppingListRouter = require("./routes/generatedShoppingListRouter");
 const initializeDatabase = require("./db/init");
+const { requireAuth } = require("./middleware/requireAuth");
 
-app.use("/shopping-list", shoppingListRouter);
-app.use("/recipes", recipesRouter);
-app.use("/generated-shopping-list", generatedShoppingListRouter);
+app.use("/shopping-list", requireAuth, shoppingListRouter);
+app.use("/recipes", requireAuth, recipesRouter);
+app.use("/generated-shopping-list", requireAuth, generatedShoppingListRouter);
 
 app.get("/", (req, res) => res.json({ status: "ok" }));
 
