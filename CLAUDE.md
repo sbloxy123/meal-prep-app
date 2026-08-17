@@ -96,7 +96,18 @@ Key endpoints (all under `/api/auth`):
 
 BetterAuth manages four tables: `user`, `session`, `account`, `verification` — created by `db/migrations/002_better_auth_schema.sql`.
 
-All API routes (`/recipes`, `/shopping-list`, `/generated-shopping-list`) are protected by `middleware/requireAuth.js`, which reads the session from the BetterAuth cookie and sets `req.user`. All queries are scoped to `req.user.id` — users can only see and modify their own data.
+All API routes (`/recipes`, `/shopping-list`, `/generated-shopping-list`) are protected by `middleware/requireAuth.js`, which reads the session from the BetterAuth cookie, sets `req.user`, and resolves the caller's household into `req.householdId` (lazily creating one on first use — see Households below).
+
+### Households (tenancy)
+
+Data is scoped by **household**, not by individual user, so family members can share one pool of recipes, menus and shopping lists. Added by `db/migrations/004_households.sql`.
+
+- `household` (`id`, `name`, `created_at`) and `household_member` (`household_id`, `user_id`, `role` = `owner`|`member`) — a user belongs to exactly one household (enforced by a unique index on `household_member.user_id`; relax later for multi-household).
+- `recipes`, `shopping_list`, `generated_shopping_list` each carry a `household_id` (the scope key every query filters on). `recipes.user_id` is retained as "added by" attribution; `createRecipe(data, householdId, userId)` sets both.
+- `requireAuth` calls `db.ensureHouseholdForUser(userId, name)`; new users get a household (them as `owner`) on their first authenticated request. Controllers pass `req.householdId` to queries.
+- **Collections/tags** are scoped to the household via `getAllTags(householdId)` (distinct tags used by the household's recipes) — the `tags`/`ingredients` tables themselves remain a global deduped vocabulary.
+- Migration 004 also drops the global `UNIQUE(product_name)` on `generated_shopping_list` (it previously prevented two households from having the same product).
+- Household-management UI (invite/remove members, share) is not built yet — the model is in place for it.
 
 ### AI integration
 
@@ -113,6 +124,7 @@ Key tables:
 - `shopping_list` ↔ `recipes` via `shopping_list_recipes` (shared-ingredient dedup logic: only delete a shopping list item if no other recipe on the menu uses it)
 - `generated_shopping_list` — AI-organised list; cleared and rebuilt on each organise call
 - `user`, `session`, `account`, `verification` — BetterAuth tables
+- `household`, `household_member` — tenancy; `recipes`/`shopping_list`/`generated_shopping_list` carry `household_id` (see Households above)
 
 `recipes.is_on_menu` — whether the recipe is on the current week's menu.
 `recipes.favorite` — added via `db/migrations/001_add_favorite_to_recipes.sql`.

@@ -3,14 +3,14 @@ const { recipeSchema } = require("../schemas/recipe.schema.js");
 
 async function getRecipes(req, res, next) {
     try {
-        const userId = req.user.id;
+        const householdId = req.householdId;
         const [allRecipes, allTags, singleRecipeTags, singleRecipeIngredients, shoppingListIngredientsByRecipe] =
             await Promise.all([
-                db.getAllRecipes(userId),
-                db.getAllTags(),
-                db.getSingleRecipeTags(userId),
-                db.getSingleRecipeIngredients(userId),
-                db.getShoppingListIngredientsByRecipe(userId),
+                db.getAllRecipes(householdId),
+                db.getAllTags(householdId),
+                db.getSingleRecipeTags(householdId),
+                db.getSingleRecipeIngredients(householdId),
+                db.getShoppingListIngredientsByRecipe(householdId),
             ]);
 
         res.json({
@@ -47,7 +47,7 @@ async function createRecipe(req, res, next) {
                 "https://" + data.recipe_link_url.replace(/^https?:\/\//, "");
         }
 
-        await db.createRecipe(data, req.user.id);
+        await db.createRecipe(data, req.householdId, req.user.id);
         res.status(201).json({ success: true });
     } catch (error) {
         next(error);
@@ -56,7 +56,7 @@ async function createRecipe(req, res, next) {
 
 async function deleteRecipe(req, res, next) {
     try {
-        await db.deleteRecipe(req.params.id, req.user.id);
+        await db.deleteRecipe(req.params.id, req.householdId);
         res.sendStatus(204);
     } catch (error) {
         next(error);
@@ -67,7 +67,7 @@ async function showSingleRecipe(req, res, next) {
     try {
         const recipeId = req.params.id;
         const [selectedRecipe, recipeIngredients, recipeTags] = await Promise.all([
-            db.findOneRecipe(recipeId, req.user.id),
+            db.findOneRecipe(recipeId, req.householdId),
             db.getRecipeIngredients(recipeId),
             db.getRecipeTags(recipeId),
         ]);
@@ -109,7 +109,7 @@ async function updateRecipe(req, res, next) {
                 "https://" + data.recipe_link_url.replace(/^https?:\/\//, "");
         }
 
-        await db.updateRecipe(data, recipeId, req.user.id);
+        await db.updateRecipe(data, recipeId, req.householdId);
 
         const [updatedIngredients, updatedTags] = await Promise.all([
             db.getRecipeIngredients(recipeId),
@@ -132,7 +132,7 @@ async function markRecipeAsFavorite(req, res, next) {
     try {
         const { id } = req.params;
         const { favorite } = req.body;
-        await db.setRecipeFavorite(id, favorite, req.user.id);
+        await db.setRecipeFavorite(id, favorite, req.householdId);
         res.sendStatus(200);
     } catch (error) {
         next(error);

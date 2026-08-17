@@ -22,7 +22,7 @@ async function createShoppingList(req, res, next) {
             return res.status(400).json({ errors: result.error.flatten().fieldErrors });
         }
 
-        await db.createShoppingList(result.data, req.user.id);
+        await db.createShoppingList(result.data, req.householdId);
         res.status(201).json({ success: true });
     } catch (error) {
         next(error);
@@ -31,15 +31,15 @@ async function createShoppingList(req, res, next) {
 
 async function getShoppingList(req, res, next) {
     try {
-        const userId = req.user.id;
+        const householdId = req.householdId;
         const [shoppingList, allRecipesOnMenu, singleRecipeIngredients, singleRecipeTags, allTags, shoppingListIngredientsByRecipe] =
             await Promise.all([
-                db.getShoppingListItems(userId),
-                db.allRecipesOnMenu(userId),
-                db.getSingleRecipeIngredients(userId),
-                db.getSingleRecipeTags(userId),
-                db.getAllTags(),
-                db.getShoppingListIngredientsByRecipe(userId),
+                db.getShoppingListItems(householdId),
+                db.allRecipesOnMenu(householdId),
+                db.getSingleRecipeIngredients(householdId),
+                db.getSingleRecipeTags(householdId),
+                db.getAllTags(householdId),
+                db.getShoppingListIngredientsByRecipe(householdId),
             ]);
 
         res.json({
@@ -57,8 +57,8 @@ async function getShoppingList(req, res, next) {
 
 async function deleteShoppingList(req, res, next) {
     try {
-        await db.deleteShoppingList(req.user.id);
-        await db.removeIsOnMenuRecipes(req.user.id);
+        await db.deleteShoppingList(req.householdId);
+        await db.removeIsOnMenuRecipes(req.householdId);
         res.json({ success: true });
     } catch (error) {
         next(error);
@@ -74,7 +74,7 @@ async function createCustomProduct(req, res, next) {
             return res.status(400).json({ errors: result.error.flatten().fieldErrors });
         }
 
-        await db.createCustomProduct(result.data.custom_product, req.user.id);
+        await db.createCustomProduct(result.data.custom_product, req.householdId);
         res.status(201).json({ success: true });
     } catch (error) {
         next(error);
@@ -89,7 +89,7 @@ async function updateCustomProductItem(req, res, next) {
         };
         const result = customProductSchema.safeParse(formData);
 
-        await db.updateCustomProduct(result.data.custom_product_id, result.data.custom_product, req.user.id);
+        await db.updateCustomProduct(result.data.custom_product_id, result.data.custom_product, req.householdId);
         res.json({ success: true });
     } catch (error) {
         next(error);
@@ -104,7 +104,7 @@ async function updateShoppingListItem(req, res, next) {
         };
         const result = recipeIngredientSchema.safeParse(formData);
 
-        await db.updateIngredient(result.data.ingredient_id, result.data.ingredient_name, req.user.id);
+        await db.updateIngredient(result.data.ingredient_id, result.data.ingredient_name, req.householdId);
         res.json({ success: true });
     } catch (error) {
         next(error);
@@ -114,7 +114,7 @@ async function updateShoppingListItem(req, res, next) {
 async function deleteSingleShoppingListItem(req, res, next) {
     try {
         const result = shoppingListItemSchema.safeParse({ shoppingItemId: req.params.id });
-        await db.removeSingleShoppingListItem(result.data.shoppingItemId, req.user.id);
+        await db.removeSingleShoppingListItem(result.data.shoppingItemId, req.householdId);
         res.json({ success: true });
     } catch (error) {
         next(error);
@@ -123,7 +123,7 @@ async function deleteSingleShoppingListItem(req, res, next) {
 
 async function removeRecipeFromShoppingList(req, res, next) {
     try {
-        await db.removeRecipeFromShoppingList(req.params.id, req.user.id);
+        await db.removeRecipeFromShoppingList(req.params.id, req.householdId);
         res.json({ success: true });
     } catch (error) {
         next(error);
@@ -132,8 +132,8 @@ async function removeRecipeFromShoppingList(req, res, next) {
 
 async function organiseShoppingList(req, res, next) {
     try {
-        const userId = req.user.id;
-        const shoppingList = await db.getShoppingListItems(userId);
+        const householdId = req.householdId;
+        const shoppingList = await db.getShoppingListItems(householdId);
 
         const formattedList = shoppingList.map((item) => ({
             name: item.ingredient_name || item.custom_product,
@@ -190,7 +190,7 @@ async function organiseShoppingList(req, res, next) {
             }
         }
 
-        await db.createShoppingListByAisles(result, userId);
+        await db.createShoppingListByAisles(result, householdId);
         res.json({ success: true });
     } catch (error) {
         next(error);
@@ -199,7 +199,7 @@ async function organiseShoppingList(req, res, next) {
 
 async function parseIngredientsWithAI(req, res, next) {
     try {
-        const userId = req.user.id;
+        const householdId = req.householdId;
         const rawText = req.body.ingredients_text;
         if (!rawText || !rawText.trim()) {
             return res.status(400).json({ error: "No ingredients text provided" });
@@ -241,8 +241,8 @@ Raw text: ${rawText}`,
         for (const item of items) {
             const trimmed = item.trim();
             if (trimmed) {
-                await db.createCustomProduct(trimmed, userId);
-                const row = await db.getCustomProductByName(trimmed, userId);
+                await db.createCustomProduct(trimmed, householdId);
+                const row = await db.getCustomProductByName(trimmed, householdId);
                 if (row) addedItems.push(row);
             }
         }
