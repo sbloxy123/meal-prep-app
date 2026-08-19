@@ -1,5 +1,6 @@
 const db = require("../db/queries");
 const { recipeSchema } = require("../schemas/recipe.schema.js");
+const { deleteAsset } = require("../lib/cloudinary");
 
 async function getRecipes(req, res, next) {
     try {
@@ -56,6 +57,10 @@ async function createRecipe(req, res, next) {
 
 async function deleteRecipe(req, res, next) {
     try {
+        // Remove the Cloudinary photo (if any) before the row is gone (§9.5).
+        const recipe = await db.findOneRecipe(req.params.id, req.user.id);
+        if (recipe?.image_public_id) await deleteAsset(recipe.image_public_id);
+
         await db.deleteRecipe(req.params.id, req.user.id);
         res.sendStatus(204);
     } catch (error) {

@@ -11,6 +11,9 @@ const recipeSchema = z.object({
     ingredient_quantity: z.array(z.coerce.number().optional()),
     ingredient_unit: z.array(z.string().optional()),
     tags: z.array(z.string().optional()),
+    // Cloudinary photo (§9) — set by the browser upload, both optional.
+    image_url: z.string().optional(),
+    image_public_id: z.string().optional(),
 });
 
 const recipeShoppingListSchema = z.object({

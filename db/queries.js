@@ -50,6 +50,8 @@ async function createRecipe(data, userId) {
         ingredient_quantity,
         ingredient_unit,
         tags,
+        image_url,
+        image_public_id,
     } = data;
 
     const ingredientIds = await Promise.all(
@@ -62,7 +64,7 @@ async function createRecipe(data, userId) {
 
     try {
         const { rows } = await pool.query(
-            "INSERT INTO recipes (title, description, instructions, link_url, prep_time_minutes, cook_time_minutes, user_id) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+            "INSERT INTO recipes (title, description, instructions, link_url, prep_time_minutes, cook_time_minutes, image_url, image_public_id, user_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id",
             [
                 recipe_title,
                 recipe_description,
@@ -70,6 +72,8 @@ async function createRecipe(data, userId) {
                 recipe_link_url,
                 prep_time_minutes,
                 cook_time_minutes,
+                image_url ?? null,
+                image_public_id ?? null,
                 userId,
             ],
         );
@@ -163,13 +167,16 @@ async function updateRecipe(data, recipeId, userId) {
             ingredient_quantity,
             ingredient_unit,
             tags,
+            image_url,
+            image_public_id,
         } = data;
 
         await pool.query(
             `UPDATE recipes
              SET title = $1, description = $2, instructions = $3,
-                 link_url = $4, prep_time_minutes = $5, cook_time_minutes = $6
-             WHERE id = $7 AND user_id = $8`,
+                 link_url = $4, prep_time_minutes = $5, cook_time_minutes = $6,
+                 image_url = $7, image_public_id = $8
+             WHERE id = $9 AND user_id = $10`,
             [
                 recipe_title,
                 recipe_description,
@@ -177,6 +184,8 @@ async function updateRecipe(data, recipeId, userId) {
                 recipe_link_url,
                 prep_time_minutes,
                 cook_time_minutes,
+                image_url ?? null,
+                image_public_id ?? null,
                 recipeId,
                 userId,
             ],

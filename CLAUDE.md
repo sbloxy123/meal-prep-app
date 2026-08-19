@@ -116,7 +116,23 @@ Key tables:
 
 `recipes.is_on_menu` — whether the recipe is on the current week's menu.
 `recipes.favorite` — added via `db/migrations/001_add_favorite_to_recipes.sql`.
+`recipes.image_url` / `recipes.image_public_id` — Cloudinary photo (see below),
+added via `db/migrations/004_add_image_to_recipes.sql`. Both nullable; no image
+is the normal case.
 Ingredient names are normalised to lowercase on insert.
+
+### Recipe images (Cloudinary)
+
+Photos live in Cloudinary, not this API. The browser uploads directly to
+Cloudinary with an **unsigned upload preset** (frontend env
+`NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME` / `NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET`);
+the API never proxies the file. On success the frontend PUTs `secure_url` +
+`public_id` onto the recipe, stored in `image_url` / `image_public_id`.
+Deleting a recipe deletes its Cloudinary asset via `image_public_id`
+(`lib/cloudinary.js` → `deleteAsset`, called from `deleteRecipe`). Configure the
+backend with `CLOUDINARY_CLOUD_NAME` + `CLOUDINARY_API_KEY` +
+`CLOUDINARY_API_SECRET` (or a single `CLOUDINARY_URL`); if unset, deleteAsset is
+a safe no-op. `recipeSchema` accepts both fields as optional strings.
 
 ## Frontend (Next.js)
 
