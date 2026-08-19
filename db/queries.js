@@ -316,6 +316,10 @@ async function removeIsOnMenuRecipes(userId) {
     await pool.query("UPDATE recipes SET is_on_menu = false WHERE user_id = $1", [userId]);
 }
 
+async function clearGeneratedShoppingList(userId) {
+    await pool.query("DELETE FROM generated_shopping_list WHERE user_id = $1", [userId]);
+}
+
 async function createCustomProduct(customProduct, userId) {
     const { rows } = await pool.query(
         "SELECT * FROM shopping_list WHERE custom_product = $1 AND user_id = $2",
@@ -490,6 +494,7 @@ module.exports = {
     createShoppingList,
     getShoppingListItems,
     deleteShoppingList,
+    clearGeneratedShoppingList,
     allRecipesOnMenu,
     removeIsOnMenuRecipes,
     createCustomProduct,

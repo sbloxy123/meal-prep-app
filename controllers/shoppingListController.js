@@ -65,6 +65,21 @@ async function deleteShoppingList(req, res, next) {
     }
 }
 
+// §8.1 — close the loop after shopping: clear the draft list, the generated
+// aisle list, and take every recipe off this week, ready for a fresh start.
+// Composes existing queries; no schema change.
+async function finishShop(req, res, next) {
+    try {
+        const userId = req.user.id;
+        await db.deleteShoppingList(userId);
+        await db.clearGeneratedShoppingList(userId);
+        await db.removeIsOnMenuRecipes(userId);
+        res.json({ success: true });
+    } catch (error) {
+        next(error);
+    }
+}
+
 async function createCustomProduct(req, res, next) {
     try {
         const formData = { custom_product: req.body.custom_product };
@@ -257,6 +272,7 @@ module.exports = {
     createShoppingList,
     getShoppingList,
     deleteShoppingList,
+    finishShop,
     createCustomProduct,
     updateShoppingListItem,
     updateCustomProductItem,
