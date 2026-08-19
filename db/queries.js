@@ -414,6 +414,19 @@ async function addSingleItemToGeneratedList(product, userId) {
     );
 }
 
+// §8.2a — append a single "forgot something" item to the generated list
+// without regenerating. Dropped in an "Other" aisle. ON CONFLICT guards the
+// global unique constraint on product_name.
+async function addForgottenItemToGeneratedList(productName, userId) {
+    await pool.query(
+        `INSERT INTO generated_shopping_list
+             (product_name, aisle_name, recipe_count, is_custom_product, quantity, user_id)
+         VALUES ($1, 'Other', '0', true, '1', $2)
+         ON CONFLICT (product_name) DO NOTHING`,
+        [productName, userId],
+    );
+}
+
 async function createShoppingListByAisles(generatedShoppingItems, userId) {
     try {
         await pool.query(
@@ -487,6 +500,7 @@ module.exports = {
     getRecipeTags,
     updateRecipe,
     createShoppingListByAisles,
+    addForgottenItemToGeneratedList,
     getGeneratedShoppingListItems,
     toggleCollected,
     setRecipeFavorite,

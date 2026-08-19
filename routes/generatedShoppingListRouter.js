@@ -6,6 +6,10 @@ generatedShoppingListRouter.get(
     "/",
     generatedShoppingListController.getGeneratedShoppingList,
 );
+generatedShoppingListRouter.post(
+    "/",
+    generatedShoppingListController.addItemToGeneratedList,
+);
 generatedShoppingListRouter.put(
     "/item/:id",
     generatedShoppingListController.markShoppingListItemAsCollected,
