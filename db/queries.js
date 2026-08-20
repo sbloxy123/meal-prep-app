@@ -1,9 +1,59 @@
 const pool = require("./pool");
 
-async function getAllRecipes(userId) {
+// ========= HOUSEHOLD RESOLUTION ========= //
+// Data is scoped by household, not by user. requireAuth resolves the caller's
+// household id once per request and passes it to the queries below.
+
+async function getHouseholdIdForUser(userId) {
     const { rows } = await pool.query(
-        "SELECT * FROM recipes WHERE user_id = $1 ORDER BY id",
+        "SELECT household_id FROM household_member WHERE user_id = $1 LIMIT 1",
         [userId],
+    );
+    return rows[0]?.household_id ?? null;
+}
+
+// Resolve the user's household, creating one (with them as owner) on first use.
+// New users have no household until their first authenticated request.
+async function ensureHouseholdForUser(userId, displayName) {
+    const existing = await getHouseholdIdForUser(userId);
+    if (existing) return existing;
+
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+        const { rows } = await client.query(
+            "INSERT INTO household (name) VALUES ($1) RETURNING id",
+            [displayName ? `${displayName}'s kitchen` : null],
+        );
+        const householdId = rows[0].id;
+        const member = await client.query(
+            `INSERT INTO household_member (household_id, user_id, role)
+             VALUES ($1, $2, 'owner')
+             ON CONFLICT (user_id) DO NOTHING`,
+            [householdId, userId],
+        );
+        // If the membership insert was a no-op, a concurrent request already
+        // created this user's household — roll back so we don't orphan the row.
+        if (member.rowCount === 0) {
+            await client.query("ROLLBACK");
+        } else {
+            await client.query("COMMIT");
+        }
+    } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+    } finally {
+        client.release();
+    }
+    return await getHouseholdIdForUser(userId);
+}
+
+// ========= RECIPES ========= //
+
+async function getAllRecipes(householdId) {
+    const { rows } = await pool.query(
+        "SELECT * FROM recipes WHERE household_id = $1 ORDER BY id",
+        [householdId],
     );
     return rows;
 }
@@ -38,7 +88,7 @@ async function createSingleIngredient(ingredient) {
     return rows[0].id;
 }
 
-async function createRecipe(data, userId) {
+async function createRecipe(data, householdId, userId) {
     const {
         recipe_title,
         recipe_description,
@@ -64,7 +114,7 @@ async function createRecipe(data, userId) {
 
     try {
         const { rows } = await pool.query(
-            "INSERT INTO recipes (title, description, instructions, link_url, prep_time_minutes, cook_time_minutes, image_url, image_public_id, user_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id",
+            "INSERT INTO recipes (title, description, instructions, link_url, prep_time_minutes, cook_time_minutes, image_url, image_public_id, household_id, user_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id",
             [
                 recipe_title,
                 recipe_description,
@@ -74,6 +124,7 @@ async function createRecipe(data, userId) {
                 cook_time_minutes,
                 image_url ?? null,
                 image_public_id ?? null,
+                householdId,
                 userId,
             ],
         );
@@ -102,17 +153,17 @@ async function createRecipe(data, userId) {
     }
 }
 
-async function deleteRecipe(recipeId, userId) {
-    await pool.query("DELETE FROM recipes WHERE id = $1 AND user_id = $2", [
+async function deleteRecipe(recipeId, householdId) {
+    await pool.query("DELETE FROM recipes WHERE id = $1 AND household_id = $2", [
         recipeId,
-        userId,
+        householdId,
     ]);
 }
 
-async function findOneRecipe(recipeId, userId) {
+async function findOneRecipe(recipeId, householdId) {
     const { rows } = await pool.query(
-        "SELECT * FROM recipes WHERE id = $1 AND user_id = $2",
-        [recipeId, userId],
+        "SELECT * FROM recipes WHERE id = $1 AND household_id = $2",
+        [recipeId, householdId],
     );
     return rows[0];
 }
@@ -125,36 +176,46 @@ async function getRecipeIngredients(recipeId) {
     return rows;
 }
 
-async function getAllTags() {
-    const { rows } = await pool.query("SELECT * FROM tags");
+// Collections available to a household = the distinct tags used by its recipes.
+// Previously this returned every tag in the system (a cross-household leak).
+async function getAllTags(householdId) {
+    const { rows } = await pool.query(
+        `SELECT DISTINCT tags.id, tags.name
+         FROM tags
+         INNER JOIN recipe_tags ON recipe_tags.tag_id = tags.id
+         INNER JOIN recipes ON recipes.id = recipe_tags.recipe_id
+         WHERE recipes.household_id = $1
+         ORDER BY tags.name;`,
+        [householdId],
+    );
     return rows;
 }
 
-async function getSingleRecipeTags(userId) {
+async function getSingleRecipeTags(householdId) {
     const { rows } = await pool.query(
         `SELECT recipes.title AS tag_recipe_title, tags.name
          FROM recipe_tags
          INNER JOIN recipes ON recipes.id = recipe_tags.recipe_id
          INNER JOIN tags ON tags.id = recipe_tags.tag_id
-         WHERE recipes.user_id = $1;`,
-        [userId],
+         WHERE recipes.household_id = $1;`,
+        [householdId],
     );
     return rows;
 }
 
-async function getSingleRecipeIngredients(userId) {
+async function getSingleRecipeIngredients(householdId) {
     const { rows } = await pool.query(
         `SELECT title AS recipe_title, ingredients.name AS ingredient, ingredients.id AS ingredient_id, recipe_ingredients.quantity, recipe_ingredients.unit
          FROM recipe_ingredients
          INNER JOIN recipes ON recipes.id = recipe_ingredients.recipe_id
          INNER JOIN ingredients ON ingredients.id = recipe_ingredients.ingredient_id
-         WHERE recipes.user_id = $1;`,
-        [userId],
+         WHERE recipes.household_id = $1;`,
+        [householdId],
     );
     return rows;
 }
 
-async function updateRecipe(data, recipeId, userId) {
+async function updateRecipe(data, recipeId, householdId) {
     try {
         const {
             recipe_title,
@@ -176,7 +237,7 @@ async function updateRecipe(data, recipeId, userId) {
              SET title = $1, description = $2, instructions = $3,
                  link_url = $4, prep_time_minutes = $5, cook_time_minutes = $6,
                  image_url = $7, image_public_id = $8
-             WHERE id = $9 AND user_id = $10`,
+             WHERE id = $9 AND household_id = $10`,
             [
                 recipe_title,
                 recipe_description,
@@ -187,7 +248,7 @@ async function updateRecipe(data, recipeId, userId) {
                 image_url ?? null,
                 image_public_id ?? null,
                 recipeId,
-                userId,
+                householdId,
             ],
         );
         await pool.query(
@@ -242,27 +303,27 @@ async function getRecipeTags(recipeId) {
 
 // ========= SHOPPING LIST & MENU QUERIES ========= //
 
-async function getShoppingListIngredientsByRecipe(userId) {
+async function getShoppingListIngredientsByRecipe(householdId) {
     const { rows } = await pool.query(
         `SELECT shopping_list_recipes.recipe_id, shopping_list.ingredient_name
          FROM shopping_list
          INNER JOIN shopping_list_recipes ON shopping_list.id = shopping_list_recipes.shopping_list_id
-         WHERE shopping_list.ingredient_name IS NOT NULL AND shopping_list.user_id = $1`,
-        [userId],
+         WHERE shopping_list.ingredient_name IS NOT NULL AND shopping_list.household_id = $1`,
+        [householdId],
     );
     return rows;
 }
 
-async function createSingleRecipeShoppingListItem(ingredientName, recipeId, userId) {
+async function createSingleRecipeShoppingListItem(ingredientName, recipeId, householdId) {
     const { rows } = await pool.query(
-        "SELECT * FROM shopping_list WHERE ingredient_name = $1 AND user_id = $2",
-        [ingredientName, userId],
+        "SELECT * FROM shopping_list WHERE ingredient_name = $1 AND household_id = $2",
+        [ingredientName, householdId],
     );
 
     if (rows.length < 1) {
         const ingredient = await pool.query(
-            "INSERT INTO shopping_list (custom_product, ingredient_name, user_id) VALUES (null, $1, $2) RETURNING id;",
-            [ingredientName, userId],
+            "INSERT INTO shopping_list (custom_product, ingredient_name, household_id) VALUES (null, $1, $2) RETURNING id;",
+            [ingredientName, householdId],
         );
         await pool.query(
             "INSERT INTO shopping_list_recipes (shopping_list_id, recipe_id) VALUES ($1, $2)",
@@ -276,99 +337,99 @@ async function createSingleRecipeShoppingListItem(ingredientName, recipeId, user
     }
 }
 
-async function allRecipesOnMenu(userId) {
+async function allRecipesOnMenu(householdId) {
     const { rows } = await pool.query(
-        "SELECT * FROM recipes WHERE is_on_menu = true AND user_id = $1",
-        [userId],
+        "SELECT * FROM recipes WHERE is_on_menu = true AND household_id = $1",
+        [householdId],
     );
     return rows;
 }
 
-async function addRecipeToMenu(recipeId, userId) {
+async function addRecipeToMenu(recipeId, householdId) {
     await pool.query(
-        "UPDATE recipes SET is_on_menu = true WHERE recipes.id = $1 AND user_id = $2;",
-        [recipeId, userId],
+        "UPDATE recipes SET is_on_menu = true WHERE recipes.id = $1 AND household_id = $2;",
+        [recipeId, householdId],
     );
 }
 
-async function createShoppingList(recipeIngredientNames, userId) {
+async function createShoppingList(recipeIngredientNames, householdId) {
     await Promise.all([
         ...recipeIngredientNames.ingredients.map((ingredientName) =>
             createSingleRecipeShoppingListItem(
                 ingredientName,
                 recipeIngredientNames.recipeId,
-                userId,
+                householdId,
             ),
         ),
-        addRecipeToMenu(recipeIngredientNames.recipeId, userId),
+        addRecipeToMenu(recipeIngredientNames.recipeId, householdId),
     ]);
 }
 
-async function getShoppingListItems(userId) {
+async function getShoppingListItems(householdId) {
     const { rows } = await pool.query(
         `SELECT shopping_list.*, COUNT(shopping_list_recipes.id) AS recipe_count
          FROM shopping_list
          LEFT JOIN shopping_list_recipes ON shopping_list.id = shopping_list_recipes.shopping_list_id
-         WHERE shopping_list.user_id = $1
+         WHERE shopping_list.household_id = $1
          GROUP BY shopping_list.id
          ORDER BY shopping_list.id;`,
-        [userId],
+        [householdId],
     );
     return rows;
 }
 
-async function deleteShoppingList(userId) {
-    await pool.query("DELETE FROM shopping_list WHERE user_id = $1", [userId]);
+async function deleteShoppingList(householdId) {
+    await pool.query("DELETE FROM shopping_list WHERE household_id = $1", [householdId]);
 }
 
-async function removeIsOnMenuRecipes(userId) {
-    await pool.query("UPDATE recipes SET is_on_menu = false WHERE user_id = $1", [userId]);
+async function removeIsOnMenuRecipes(householdId) {
+    await pool.query("UPDATE recipes SET is_on_menu = false WHERE household_id = $1", [householdId]);
 }
 
-async function clearGeneratedShoppingList(userId) {
-    await pool.query("DELETE FROM generated_shopping_list WHERE user_id = $1", [userId]);
+async function clearGeneratedShoppingList(householdId) {
+    await pool.query("DELETE FROM generated_shopping_list WHERE household_id = $1", [householdId]);
 }
 
-async function createCustomProduct(customProduct, userId) {
+async function createCustomProduct(customProduct, householdId) {
     const { rows } = await pool.query(
-        "SELECT * FROM shopping_list WHERE custom_product = $1 AND user_id = $2",
-        [customProduct, userId],
+        "SELECT * FROM shopping_list WHERE custom_product = $1 AND household_id = $2",
+        [customProduct, householdId],
     );
 
     if (rows.length < 1) {
         await pool.query(
-            "INSERT INTO shopping_list (custom_product, ingredient_name, user_id) VALUES ($1, null, $2);",
-            [customProduct, userId],
+            "INSERT INTO shopping_list (custom_product, ingredient_name, household_id) VALUES ($1, null, $2);",
+            [customProduct, householdId],
         );
     }
 }
 
-async function getCustomProductByName(customProduct, userId) {
+async function getCustomProductByName(customProduct, householdId) {
     const { rows } = await pool.query(
-        "SELECT * FROM shopping_list WHERE custom_product = $1 AND user_id = $2",
-        [customProduct, userId],
+        "SELECT * FROM shopping_list WHERE custom_product = $1 AND household_id = $2",
+        [customProduct, householdId],
     );
     return rows[0] || null;
 }
 
-async function updateIngredient(shoppingItemId, newShoppingItemTitle, userId) {
+async function updateIngredient(shoppingItemId, newShoppingItemTitle, householdId) {
     await pool.query(
-        "UPDATE shopping_list SET ingredient_name = $1 WHERE id = $2 AND user_id = $3",
-        [newShoppingItemTitle, shoppingItemId, userId],
+        "UPDATE shopping_list SET ingredient_name = $1 WHERE id = $2 AND household_id = $3",
+        [newShoppingItemTitle, shoppingItemId, householdId],
     );
 }
 
-async function updateCustomProduct(customProductId, customProduct, userId) {
+async function updateCustomProduct(customProductId, customProduct, householdId) {
     await pool.query(
-        "UPDATE shopping_list SET custom_product = $1 WHERE id = $2 AND user_id = $3",
-        [customProduct, customProductId, userId],
+        "UPDATE shopping_list SET custom_product = $1 WHERE id = $2 AND household_id = $3",
+        [customProduct, customProductId, householdId],
     );
 }
 
-async function removeSingleShoppingListItem(shoppingListItemId, userId) {
+async function removeSingleShoppingListItem(shoppingListItemId, householdId) {
     await pool.query(
-        "DELETE FROM shopping_list WHERE id = $1 AND user_id = $2",
-        [shoppingListItemId, userId],
+        "DELETE FROM shopping_list WHERE id = $1 AND household_id = $2",
+        [shoppingListItemId, householdId],
     );
 }
 
@@ -380,11 +441,11 @@ async function checkForDuplicateIngredients(recipeIngredient) {
     return parseInt(ingredientCount.rows[0].count);
 }
 
-async function removeRecipeFromShoppingList(recipeId, userId) {
+async function removeRecipeFromShoppingList(recipeId, householdId) {
     try {
         await pool.query(
-            "UPDATE recipes SET is_on_menu = false WHERE id = $1 AND user_id = $2",
-            [recipeId, userId],
+            "UPDATE recipes SET is_on_menu = false WHERE id = $1 AND household_id = $2",
+            [recipeId, householdId],
         );
 
         const { rows: recipesShoppingListItemIdsRows } = await pool.query(
@@ -397,8 +458,8 @@ async function removeRecipeFromShoppingList(recipeId, userId) {
             );
             if (ingredientCount < 2) {
                 await pool.query(
-                    "DELETE FROM shopping_list WHERE id = $1 AND user_id = $2",
-                    [row.shopping_list_id, userId],
+                    "DELETE FROM shopping_list WHERE id = $1 AND household_id = $2",
+                    [row.shopping_list_id, householdId],
                 );
             }
         }
@@ -413,42 +474,46 @@ async function removeRecipeFromShoppingList(recipeId, userId) {
     }
 }
 
-async function addSingleItemToGeneratedList(product, userId) {
+async function addSingleItemToGeneratedList(product, householdId) {
     await pool.query(
-        "INSERT INTO generated_shopping_list (product_name, aisle_name, recipe_count, is_custom_product, quantity, user_id) VALUES ($1, $2, $3, $4, $5, $6)",
+        "INSERT INTO generated_shopping_list (product_name, aisle_name, recipe_count, is_custom_product, quantity, household_id) VALUES ($1, $2, $3, $4, $5, $6)",
         [
             product.product,
             product.aisle,
             product.recipe_count,
             product.is_custom_product,
             product.quantity,
-            userId,
+            householdId,
         ],
     );
 }
 
 // §8.2a — append a single "forgot something" item to the generated list
-// without regenerating. Dropped in an "Other" aisle. ON CONFLICT guards the
-// global unique constraint on product_name.
-async function addForgottenItemToGeneratedList(productName, userId) {
+// without regenerating. Dropped in an "Other" aisle. The households migration
+// drops the global unique(product_name), so ON CONFLICT no longer applies —
+// guard against a duplicate within this household with WHERE NOT EXISTS.
+async function addForgottenItemToGeneratedList(productName, householdId) {
     await pool.query(
         `INSERT INTO generated_shopping_list
-             (product_name, aisle_name, recipe_count, is_custom_product, quantity, user_id)
-         VALUES ($1, 'Other', '0', true, '1', $2)
-         ON CONFLICT (product_name) DO NOTHING`,
-        [productName, userId],
+             (product_name, aisle_name, recipe_count, is_custom_product, quantity, household_id)
+         SELECT $1, 'Other', '0', true, '1', $2
+         WHERE NOT EXISTS (
+             SELECT 1 FROM generated_shopping_list
+             WHERE product_name = $1 AND household_id = $2
+         )`,
+        [productName, householdId],
     );
 }
 
-async function createShoppingListByAisles(generatedShoppingItems, userId) {
+async function createShoppingListByAisles(generatedShoppingItems, householdId) {
     try {
         await pool.query(
-            "DELETE FROM generated_shopping_list WHERE user_id = $1",
-            [userId],
+            "DELETE FROM generated_shopping_list WHERE household_id = $1",
+            [householdId],
         );
         await Promise.all(
             generatedShoppingItems.items.map((product) =>
-                addSingleItemToGeneratedList(product, userId),
+                addSingleItemToGeneratedList(product, householdId),
             ),
         );
     } catch (error) {
@@ -457,40 +522,42 @@ async function createShoppingListByAisles(generatedShoppingItems, userId) {
     }
 }
 
-async function getGeneratedShoppingListItems(userId) {
+async function getGeneratedShoppingListItems(householdId) {
     const { rows } = await pool.query(
-        "SELECT * FROM generated_shopping_list WHERE user_id = $1",
-        [userId],
+        "SELECT * FROM generated_shopping_list WHERE household_id = $1",
+        [householdId],
     );
     return rows;
 }
 
-async function toggleCollected(productId, status, userId) {
+async function toggleCollected(productId, status, householdId) {
     await pool.query(
-        "UPDATE generated_shopping_list SET is_collected = $2 WHERE id = $1 AND user_id = $3",
-        [productId, status, userId],
+        "UPDATE generated_shopping_list SET is_collected = $2 WHERE id = $1 AND household_id = $3",
+        [productId, status, householdId],
     );
 }
 
-async function setRecipeFavorite(recipeId, favorite, userId) {
+async function setRecipeFavorite(recipeId, favorite, householdId) {
     await pool.query(
-        "UPDATE recipes SET favorite = $2 WHERE id = $1 AND user_id = $3",
-        [recipeId, favorite, userId],
+        "UPDATE recipes SET favorite = $2 WHERE id = $1 AND household_id = $3",
+        [recipeId, favorite, householdId],
     );
 }
 
-async function deleteProductItemBoth(productId, productName, userId) {
+async function deleteProductItemBoth(productId, productName, householdId) {
     await pool.query(
-        "DELETE FROM generated_shopping_list WHERE id = $1 AND user_id = $2",
-        [productId, userId],
+        "DELETE FROM generated_shopping_list WHERE id = $1 AND household_id = $2",
+        [productId, householdId],
     );
     await pool.query(
-        "DELETE FROM shopping_list WHERE (LOWER(custom_product) = LOWER($1) OR LOWER(ingredient_name) = LOWER($1)) AND user_id = $2",
-        [productName, userId],
+        "DELETE FROM shopping_list WHERE (LOWER(custom_product) = LOWER($1) OR LOWER(ingredient_name) = LOWER($1)) AND household_id = $2",
+        [productName, householdId],
     );
 }
 
 module.exports = {
+    getHouseholdIdForUser,
+    ensureHouseholdForUser,
     getAllRecipes,
     findOneRecipe,
     createRecipe,

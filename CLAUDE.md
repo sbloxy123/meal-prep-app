@@ -47,6 +47,11 @@ ALLOWED_ORIGINS=http://localhost:3000
 BETTER_AUTH_SECRET=
 # The URL of this API itself (used by BetterAuth internally)
 BETTER_AUTH_URL=http://localhost:3001
+
+# Resend — transactional email (password reset, email verification)
+RESEND_API_KEY=
+# Verified sender. Falls back to Resend's test sender (own-account only) if unset.
+EMAIL_FROM=Mise en Place <noreply@yourdomain.com>
 ```
 
 When deploying to Railway, set all of the above as environment variables in the Railway dashboard. `ALLOWED_ORIGINS` must point to the deployed Next.js Vercel URL.
@@ -96,7 +101,25 @@ Key endpoints (all under `/api/auth`):
 
 BetterAuth manages four tables: `user`, `session`, `account`, `verification` — created by `db/migrations/002_better_auth_schema.sql`.
 
-All API routes (`/recipes`, `/shopping-list`, `/generated-shopping-list`) are protected by `middleware/requireAuth.js`, which reads the session from the BetterAuth cookie and sets `req.user`. All queries are scoped to `req.user.id` — users can only see and modify their own data.
+**Auth hardening** (`lib/auth.js`, `lib/email.js`):
+- **Email verification required** (`requireEmailVerification: true`) — new sign-ups must confirm their email before signing in; verification is sent on sign-up and re-sent on a sign-in attempt by an unverified user. **Existing users have `emailVerified = false`** and will be prompted to verify on next sign-in — to pre-verify them run `UPDATE "user" SET "emailVerified" = true;`.
+- **Password reset** via `POST /api/auth/request-password-reset` → email link.
+- **Rate limiting** on `/sign-in/email`, `/sign-up/email`, `/request-password-reset`, `/send-verification-email`.
+- Email is sent through **Resend** (`lib/email.js`). Reset/verification links are rewritten to the frontend origin so the Next proxy keeps the session cookie same-origin.
+- Frontend still needs: a `/reset-password` page (calls `authClient.resetPassword`), a verification landing/"check your email" state, and to pass `redirectTo` (a frontend path) when requesting a reset. See design brief §6.1.
+
+All API routes (`/recipes`, `/shopping-list`, `/generated-shopping-list`) are protected by `middleware/requireAuth.js`, which reads the session from the BetterAuth cookie, sets `req.user`, and resolves the caller's household into `req.householdId` (lazily creating one on first use — see Households below).
+
+### Households (tenancy)
+
+Data is scoped by **household**, not by individual user, so family members can share one pool of recipes, menus and shopping lists. Added by `db/migrations/004_households.sql`.
+
+- `household` (`id`, `name`, `created_at`) and `household_member` (`household_id`, `user_id`, `role` = `owner`|`member`) — a user belongs to exactly one household (enforced by a unique index on `household_member.user_id`; relax later for multi-household).
+- `recipes`, `shopping_list`, `generated_shopping_list` each carry a `household_id` (the scope key every query filters on). `recipes.user_id` is retained as "added by" attribution; `createRecipe(data, householdId, userId)` sets both.
+- `requireAuth` calls `db.ensureHouseholdForUser(userId, name)`; new users get a household (them as `owner`) on their first authenticated request. Controllers pass `req.householdId` to queries.
+- **Collections/tags** are scoped to the household via `getAllTags(householdId)` (distinct tags used by the household's recipes) — the `tags`/`ingredients` tables themselves remain a global deduped vocabulary.
+- Migration 004 also drops the global `UNIQUE(product_name)` on `generated_shopping_list` (it previously prevented two households from having the same product).
+- Household-management UI (invite/remove members, share) is not built yet — the model is in place for it.
 
 ### AI integration
 
@@ -113,6 +136,7 @@ Key tables:
 - `shopping_list` ↔ `recipes` via `shopping_list_recipes` (shared-ingredient dedup logic: only delete a shopping list item if no other recipe on the menu uses it)
 - `generated_shopping_list` — AI-organised list; cleared and rebuilt on each organise call
 - `user`, `session`, `account`, `verification` — BetterAuth tables
+- `household`, `household_member` — tenancy; `recipes`/`shopping_list`/`generated_shopping_list` carry `household_id` (see Households above)
 
 `recipes.is_on_menu` — whether the recipe is on the current week's menu.
 `recipes.favorite` — added via `db/migrations/001_add_favorite_to_recipes.sql`.
