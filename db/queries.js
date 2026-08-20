@@ -555,9 +555,232 @@ async function deleteProductItemBoth(productId, productName, householdId) {
     );
 }
 
+// ---- Household management (C2: invite / join / leave / remove) ----
+
+function withStatus(message, status) {
+    const err = new Error(message);
+    err.status = status;
+    return err;
+}
+
+async function getHouseholdById(householdId) {
+    const { rows } = await pool.query("SELECT id, name FROM household WHERE id = $1", [householdId]);
+    return rows[0];
+}
+
+async function getHouseholdMembers(householdId) {
+    const { rows } = await pool.query(
+        `SELECT hm.user_id, hm.role, hm.joined_at, u.name, u.email
+         FROM household_member hm
+         JOIN "user" u ON u.id = hm.user_id
+         WHERE hm.household_id = $1
+         ORDER BY hm.joined_at ASC`,
+        [householdId],
+    );
+    return rows;
+}
+
+async function getMemberRole(householdId, userId) {
+    const { rows } = await pool.query(
+        "SELECT role FROM household_member WHERE household_id = $1 AND user_id = $2",
+        [householdId, userId],
+    );
+    return rows[0]?.role ?? null;
+}
+
+async function renameHousehold(householdId, name) {
+    await pool.query("UPDATE household SET name = $1 WHERE id = $2", [name, householdId]);
+}
+
+async function getPendingInvites(householdId) {
+    const { rows } = await pool.query(
+        `SELECT id, invited_email, created_at, expires_at
+         FROM household_invite
+         WHERE household_id = $1 AND accepted_at IS NULL AND expires_at > now()
+         ORDER BY created_at DESC`,
+        [householdId],
+    );
+    return rows;
+}
+
+async function createInvite(householdId, invitedEmail, invitedBy, token, expiresAt) {
+    // Replace any existing pending invite for the same email + household.
+    await pool.query(
+        `DELETE FROM household_invite
+         WHERE household_id = $1 AND lower(invited_email) = lower($2) AND accepted_at IS NULL`,
+        [householdId, invitedEmail],
+    );
+    const { rows } = await pool.query(
+        `INSERT INTO household_invite (household_id, invited_email, invited_by, token, expires_at)
+         VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+        [householdId, invitedEmail, invitedBy, token, expiresAt],
+    );
+    return rows[0].id;
+}
+
+async function revokeInvite(householdId, inviteId) {
+    await pool.query(
+        "DELETE FROM household_invite WHERE id = $1 AND household_id = $2",
+        [inviteId, householdId],
+    );
+}
+
+// Accept an invite (transactional). Moves the user into the invite's household.
+// If they were the sole member of their old (solo) household, their recipes and
+// lists are merged in and the empty household is removed; if they were in a
+// shared household, they just move across and the shared data stays behind.
+async function acceptInvite(userId, token) {
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+
+        const { rows: invRows } = await client.query(
+            `SELECT hi.*, h.name AS household_name
+             FROM household_invite hi JOIN household h ON h.id = hi.household_id
+             WHERE hi.token = $1 FOR UPDATE OF hi`,
+            [token],
+        );
+        const invite = invRows[0];
+        if (!invite) throw withStatus("This invite link isn't valid.", 404);
+        if (invite.accepted_at) throw withStatus("This invite has already been used.", 410);
+        if (new Date(invite.expires_at) < new Date()) throw withStatus("This invite has expired.", 410);
+
+        const target = invite.household_id;
+        const { rows: curRows } = await client.query(
+            "SELECT household_id FROM household_member WHERE user_id = $1",
+            [userId],
+        );
+        const current = curRows[0]?.household_id ?? null;
+
+        if (current !== target) {
+            let soleMember = false;
+            if (current) {
+                const { rows: cnt } = await client.query(
+                    "SELECT COUNT(*)::int AS n FROM household_member WHERE household_id = $1",
+                    [current],
+                );
+                soleMember = cnt[0].n === 1;
+            }
+
+            if (current && soleMember) {
+                // Merge the joiner's solo data into the target household.
+                await client.query("UPDATE recipes SET household_id = $1 WHERE household_id = $2", [target, current]);
+                await client.query("UPDATE shopping_list SET household_id = $1 WHERE household_id = $2", [target, current]);
+                await client.query("UPDATE generated_shopping_list SET household_id = $1 WHERE household_id = $2", [target, current]);
+            }
+
+            await client.query(
+                `INSERT INTO household_member (household_id, user_id, role)
+                 VALUES ($1, $2, 'member')
+                 ON CONFLICT (user_id) DO UPDATE SET household_id = $1, role = 'member'`,
+                [target, userId],
+            );
+
+            // The old solo household is now empty — remove it.
+            if (current && soleMember) {
+                await client.query("DELETE FROM household WHERE id = $1", [current]);
+            }
+        }
+
+        await client.query("UPDATE household_invite SET accepted_at = now() WHERE id = $1", [invite.id]);
+        await client.query("COMMIT");
+        return { household_name: invite.household_name, alreadyMember: current === target };
+    } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+    } finally {
+        client.release();
+    }
+}
+
+// Move a user out of their current household into a fresh solo one they own.
+// Shared data stays with the old household. Used by leave and remove-member.
+async function moveUserToNewHousehold(client, userId, name) {
+    const { rows } = await client.query(
+        "INSERT INTO household (name) VALUES ($1) RETURNING id",
+        [name || "My kitchen"],
+    );
+    const newId = rows[0].id;
+    await client.query(
+        `INSERT INTO household_member (household_id, user_id, role)
+         VALUES ($1, $2, 'owner')
+         ON CONFLICT (user_id) DO UPDATE SET household_id = $1, role = 'owner'`,
+        [newId, userId],
+    );
+    return newId;
+}
+
+async function leaveHousehold(userId, displayName) {
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+        const { rows } = await client.query(
+            "SELECT household_id, role FROM household_member WHERE user_id = $1",
+            [userId],
+        );
+        const membership = rows[0];
+        if (!membership) throw withStatus("You're not in a household.", 400);
+        const { household_id: hh, role } = membership;
+        const { rows: cnt } = await client.query(
+            "SELECT COUNT(*)::int AS n FROM household_member WHERE household_id = $1",
+            [hh],
+        );
+        if (cnt[0].n <= 1) throw withStatus("You're the only member — there's nothing to leave.", 400);
+
+        // Owner leaving hands ownership to the earliest-joined remaining member.
+        if (role === "owner") {
+            await client.query(
+                `UPDATE household_member SET role = 'owner'
+                 WHERE user_id = (
+                     SELECT user_id FROM household_member
+                     WHERE household_id = $1 AND user_id <> $2
+                     ORDER BY joined_at ASC LIMIT 1
+                 )`,
+                [hh, userId],
+            );
+        }
+        await moveUserToNewHousehold(client, userId, displayName ? `${displayName}'s kitchen` : "My kitchen");
+        await client.query("COMMIT");
+    } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+    } finally {
+        client.release();
+    }
+}
+
+async function removeMember(householdId, targetUserId) {
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+        const { rows } = await client.query(
+            "SELECT role FROM household_member WHERE household_id = $1 AND user_id = $2",
+            [householdId, targetUserId],
+        );
+        if (!rows[0]) throw withStatus("That person isn't in your household.", 404);
+        await moveUserToNewHousehold(client, targetUserId, "My kitchen");
+        await client.query("COMMIT");
+    } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+    } finally {
+        client.release();
+    }
+}
+
 module.exports = {
     getHouseholdIdForUser,
     ensureHouseholdForUser,
+    getHouseholdById,
+    getHouseholdMembers,
+    getMemberRole,
+    renameHousehold,
+    getPendingInvites,
+    createInvite,
+    revokeInvite,
+    acceptInvite,
+    leaveHousehold,
+    removeMember,
     getAllRecipes,
     findOneRecipe,
     createRecipe,
