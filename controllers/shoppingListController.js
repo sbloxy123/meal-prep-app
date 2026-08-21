@@ -22,7 +22,7 @@ async function createShoppingList(req, res, next) {
             return res.status(400).json({ errors: result.error.flatten().fieldErrors });
         }
 
-        await db.createShoppingList(result.data, req.householdId);
+        await db.createShoppingList(result.data, req.householdId, req.user.id);
         res.status(201).json({ success: true });
     } catch (error) {
         next(error);
@@ -32,7 +32,7 @@ async function createShoppingList(req, res, next) {
 async function getShoppingList(req, res, next) {
     try {
         const householdId = req.householdId;
-        const [shoppingList, allRecipesOnMenu, singleRecipeIngredients, singleRecipeTags, allTags, shoppingListIngredientsByRecipe] =
+        const [shoppingList, allRecipesOnMenu, singleRecipeIngredients, singleRecipeTags, allTags, shoppingListIngredientsByRecipe, householdMemberCount] =
             await Promise.all([
                 db.getShoppingListItems(householdId),
                 db.allRecipesOnMenu(householdId),
@@ -40,6 +40,7 @@ async function getShoppingList(req, res, next) {
                 db.getSingleRecipeTags(householdId),
                 db.getAllTags(householdId),
                 db.getShoppingListIngredientsByRecipe(householdId),
+                db.getHouseholdMemberCount(householdId),
             ]);
 
         res.json({
@@ -49,6 +50,7 @@ async function getShoppingList(req, res, next) {
             singleRecipeTags,
             allTags,
             shoppingListIngredientsByRecipe,
+            householdMemberCount,
         });
     } catch (error) {
         next(error);

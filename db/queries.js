@@ -52,7 +52,11 @@ async function ensureHouseholdForUser(userId, displayName) {
 
 async function getAllRecipes(householdId) {
     const { rows } = await pool.query(
-        "SELECT * FROM recipes WHERE household_id = $1 ORDER BY id",
+        `SELECT recipes.*, cu.name AS created_by_name
+         FROM recipes
+         LEFT JOIN "user" cu ON cu.id = recipes.user_id
+         WHERE recipes.household_id = $1
+         ORDER BY recipes.id`,
         [householdId],
     );
     return rows;
@@ -339,20 +343,23 @@ async function createSingleRecipeShoppingListItem(ingredientName, recipeId, hous
 
 async function allRecipesOnMenu(householdId) {
     const { rows } = await pool.query(
-        "SELECT * FROM recipes WHERE is_on_menu = true AND household_id = $1",
+        `SELECT recipes.*, au.name AS added_by_name
+         FROM recipes
+         LEFT JOIN "user" au ON au.id = recipes.added_to_menu_by
+         WHERE recipes.is_on_menu = true AND recipes.household_id = $1`,
         [householdId],
     );
     return rows;
 }
 
-async function addRecipeToMenu(recipeId, householdId) {
+async function addRecipeToMenu(recipeId, householdId, userId) {
     await pool.query(
-        "UPDATE recipes SET is_on_menu = true WHERE recipes.id = $1 AND household_id = $2;",
-        [recipeId, householdId],
+        "UPDATE recipes SET is_on_menu = true, added_to_menu_by = $3 WHERE recipes.id = $1 AND household_id = $2;",
+        [recipeId, householdId, userId],
     );
 }
 
-async function createShoppingList(recipeIngredientNames, householdId) {
+async function createShoppingList(recipeIngredientNames, householdId, userId) {
     await Promise.all([
         ...recipeIngredientNames.ingredients.map((ingredientName) =>
             createSingleRecipeShoppingListItem(
@@ -361,7 +368,7 @@ async function createShoppingList(recipeIngredientNames, householdId) {
                 householdId,
             ),
         ),
-        addRecipeToMenu(recipeIngredientNames.recipeId, householdId),
+        addRecipeToMenu(recipeIngredientNames.recipeId, householdId, userId),
     ]);
 }
 
@@ -383,7 +390,7 @@ async function deleteShoppingList(householdId) {
 }
 
 async function removeIsOnMenuRecipes(householdId) {
-    await pool.query("UPDATE recipes SET is_on_menu = false WHERE household_id = $1", [householdId]);
+    await pool.query("UPDATE recipes SET is_on_menu = false, added_to_menu_by = NULL WHERE household_id = $1", [householdId]);
 }
 
 async function clearGeneratedShoppingList(householdId) {
@@ -444,7 +451,7 @@ async function checkForDuplicateIngredients(recipeIngredient) {
 async function removeRecipeFromShoppingList(recipeId, householdId) {
     try {
         await pool.query(
-            "UPDATE recipes SET is_on_menu = false WHERE id = $1 AND household_id = $2",
+            "UPDATE recipes SET is_on_menu = false, added_to_menu_by = NULL WHERE id = $1 AND household_id = $2",
             [recipeId, householdId],
         );
 
@@ -586,6 +593,14 @@ async function getMemberRole(householdId, userId) {
         [householdId, userId],
     );
     return rows[0]?.role ?? null;
+}
+
+async function getHouseholdMemberCount(householdId) {
+    const { rows } = await pool.query(
+        "SELECT COUNT(*)::int AS n FROM household_member WHERE household_id = $1",
+        [householdId],
+    );
+    return rows[0].n;
 }
 
 async function renameHousehold(householdId, name) {
@@ -774,6 +789,7 @@ module.exports = {
     getHouseholdById,
     getHouseholdMembers,
     getMemberRole,
+    getHouseholdMemberCount,
     renameHousehold,
     getPendingInvites,
     createInvite,
