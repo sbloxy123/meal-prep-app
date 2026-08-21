@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 > **Branch note:** `main` holds the original server-rendered EJS app (no longer deployed).
 > `api-refactor` (this branch) is a pure JSON REST API and is the live deployed version on Railway.
-> The Next.js frontend lives at `github.com/sbloxy123/meal-prep-frontend` and is deployed on Vercel.
+> The Next.js frontend lives at `github.com/sbloxy123/meal-prep-frontend`, deployed on Vercel and live at **`fornetto.app`** (the app is branded **Fornetto**).
 
 ## Commands
 
@@ -39,8 +39,9 @@ DATABASE_URL=postgresql://user:password@host:port/database
 # Optional — defaults to 3001
 PORT=3001
 
-# Comma-separated frontend origins. No trailing slashes.
-# Production: https://meal-prep-frontend.vercel.app
+# Comma-separated frontend origins. No trailing slashes. The FIRST entry is used
+# to build email links (verification/invite), so keep the primary domain first.
+# Production: https://fornetto.app,https://www.fornetto.app,https://meal-prep-frontend.vercel.app
 ALLOWED_ORIGINS=http://localhost:3000
 
 # BetterAuth — generate secret with: openssl rand -base64 32
@@ -50,8 +51,9 @@ BETTER_AUTH_URL=http://localhost:3001
 
 # Resend — transactional email (password reset, email verification)
 RESEND_API_KEY=
-# Verified sender. Falls back to Resend's test sender (own-account only) if unset.
-EMAIL_FROM=Mise en Place <noreply@yourdomain.com>
+# Verified sender on a Resend-verified domain (send.fornetto.app). Falls back to
+# Resend's test sender (own-account only) if unset.
+EMAIL_FROM=Fornetto <noreply@send.fornetto.app>
 ```
 
 When deploying to Railway, set all of the above as environment variables in the Railway dashboard. `ALLOWED_ORIGINS` must point to the deployed Next.js Vercel URL.
@@ -60,7 +62,7 @@ When deploying to Railway, set all of the above as environment variables in the 
 
 Pure JSON REST API — Express + PostgreSQL. No ORM, no templating engine.
 
-**Entry point:** `app.js` — middleware order matters here (see CORS / BetterAuth note below), mounts three feature routers, runs `db/init.js` at startup before binding the port.
+**Entry point:** `app.js` — middleware order matters here (see CORS / BetterAuth note below), mounts four feature routers, runs `db/init.js` at startup before binding the port. The error handler honours an `err.status` set by controllers/queries (e.g. an expired invite → 410), falling back to 500.
 
 **Request flow:** `routes/` → `controllers/` → `db/queries.js` → `db/pool.js`
 
@@ -86,8 +88,9 @@ Two constraints drive this order:
 | Router | Mount | Purpose |
 |---|---|---|
 | `recipesRouter` | `/recipes` | CRUD for recipes |
-| `shoppingListRouter` | `/shopping-list` | Raw shopping list built from recipe ingredients |
-| `generatedShoppingListRouter` | `/generated-shopping-list` | AI-organised version of the shopping list |
+| `shoppingListRouter` | `/shopping-list` | Draft list from recipe ingredients + own items; `POST /shopping-list/finish` closes the weekly loop (clears draft + generated + takes recipes off the menu) |
+| `generatedShoppingListRouter` | `/generated-shopping-list` | AI aisle-organised list; `POST /generated-shopping-list` appends a single "forgot" item |
+| `householdRouter` | `/household` | household + members + pending invites (`GET`), `POST /invite` `/accept` `/leave`, `DELETE /invite/:id` `/member/:id`, `PUT /` (rename) |
 
 ### Authentication
 
@@ -106,20 +109,21 @@ BetterAuth manages four tables: `user`, `session`, `account`, `verification` —
 - **Password reset** via `POST /api/auth/request-password-reset` → email link.
 - **Rate limiting** on `/sign-in/email`, `/sign-up/email`, `/request-password-reset`, `/send-verification-email`.
 - Email is sent through **Resend** (`lib/email.js`). Reset/verification links are rewritten to the frontend origin so the Next proxy keeps the session cookie same-origin.
-- Frontend still needs: a `/reset-password` page (calls `authClient.resetPassword`), a verification landing/"check your email" state, and to pass `redirectTo` (a frontend path) when requesting a reset. See design brief §6.1.
+- **Account deletion** (`user.deleteUser` enabled) — `POST /api/auth/delete-user { password }`. The `beforeDelete` hook (`lib/auth.js`) is household-aware: a **sole** member deleting their account purges their Cloudinary photos and deletes the whole household (cascading recipes/lists); a **shared** member's deletion leaves the shared data intact — `recipes.user_id` is `ON DELETE SET NULL` (migration `007`), so recipes stay with attribution nulled.
+- The frontend auth pages (`/reset-password`, `/verify-email`, unverified sign-in state) and the household-management UI are all built.
 
 All API routes (`/recipes`, `/shopping-list`, `/generated-shopping-list`) are protected by `middleware/requireAuth.js`, which reads the session from the BetterAuth cookie, sets `req.user`, and resolves the caller's household into `req.householdId` (lazily creating one on first use — see Households below).
 
 ### Households (tenancy)
 
-Data is scoped by **household**, not by individual user, so family members can share one pool of recipes, menus and shopping lists. Added by `db/migrations/004_households.sql`.
+Data is scoped by **household**, not by individual user, so family members can share one pool of recipes, menus and shopping lists. Added by `db/migrations/005_households.sql`.
 
 - `household` (`id`, `name`, `created_at`) and `household_member` (`household_id`, `user_id`, `role` = `owner`|`member`) — a user belongs to exactly one household (enforced by a unique index on `household_member.user_id`; relax later for multi-household).
 - `recipes`, `shopping_list`, `generated_shopping_list` each carry a `household_id` (the scope key every query filters on). `recipes.user_id` is retained as "added by" attribution; `createRecipe(data, householdId, userId)` sets both.
 - `requireAuth` calls `db.ensureHouseholdForUser(userId, name)`; new users get a household (them as `owner`) on their first authenticated request. Controllers pass `req.householdId` to queries.
 - **Collections/tags** are scoped to the household via `getAllTags(householdId)` (distinct tags used by the household's recipes) — the `tags`/`ingredients` tables themselves remain a global deduped vocabulary.
-- Migration 004 also drops the global `UNIQUE(product_name)` on `generated_shopping_list` (it previously prevented two households from having the same product).
-- Household-management UI (invite/remove members, share) is not built yet — the model is in place for it.
+- Migration 005 also drops the global `UNIQUE(product_name)` on `generated_shopping_list` (it previously prevented two households from having the same product) — so `addForgottenItemToGeneratedList` guards dups with `WHERE NOT EXISTS` instead of `ON CONFLICT`.
+- **Invites are built** (`householdController.js` + `db/migrations/006_household_invites.sql`): the owner invites by email → tokenised link emailed via Resend → `POST /household/accept` joins the invitee transactionally. Joining from a **solo** household merges their recipes/lists into the target household, then deletes the empty one; joining from a **shared** household just moves membership. `leave` / `remove-member` move a user to a fresh solo household (shared data stays behind); owner-leave hands ownership to the earliest-joined member first.
 
 ### AI integration
 
@@ -136,7 +140,7 @@ Key tables:
 - `shopping_list` ↔ `recipes` via `shopping_list_recipes` (shared-ingredient dedup logic: only delete a shopping list item if no other recipe on the menu uses it)
 - `generated_shopping_list` — AI-organised list; cleared and rebuilt on each organise call
 - `user`, `session`, `account`, `verification` — BetterAuth tables
-- `household`, `household_member` — tenancy; `recipes`/`shopping_list`/`generated_shopping_list` carry `household_id` (see Households above)
+- `household`, `household_member`, `household_invite` — tenancy + email invites; `recipes`/`shopping_list`/`generated_shopping_list` carry `household_id` (see Households above)
 
 `recipes.is_on_menu` — whether the recipe is on the current week's menu.
 `recipes.favorite` — added via `db/migrations/001_add_favorite_to_recipes.sql`.
@@ -160,7 +164,7 @@ a safe no-op. `recipeSchema` accepts both fields as optional strings.
 
 ## Frontend (Next.js)
 
-Repo: `github.com/sbloxy123/meal-prep-frontend` — deployed to `meal-prep-frontend.vercel.app`.
+Repo: `github.com/sbloxy123/meal-prep-frontend` — deployed on Vercel, live at **`fornetto.app`** (Cloudflare DNS → Vercel → this Railway API).
 
 ### How the frontend connects to this API
 
@@ -185,4 +189,4 @@ The frontend proxies all API traffic through Next.js rewrites (in `next.config.t
 
 ### CORS
 
-`ALLOWED_ORIGINS` on Railway must include the Vercel URL. Currently set to `https://meal-prep-frontend.vercel.app`. `lib/auth.js` reads the same var for BetterAuth `trustedOrigins`.
+`ALLOWED_ORIGINS` on Railway must include every frontend origin. Currently `https://fornetto.app,https://www.fornetto.app,https://meal-prep-frontend.vercel.app` (first entry also builds email links). `lib/auth.js` reads the same var for BetterAuth `trustedOrigins`.
