@@ -54,11 +54,11 @@ async function inviteMember(req, res, next) {
         const link = `${FRONTEND_URL}/household/join/${token}`;
         await sendEmail({
             to: email,
-            subject: `${inviter} invited you to their Mise en Place kitchen`,
-            text: `${inviter} invited you to join "${householdName}" on Mise en Place. Accept your invite: ${link}`,
+            subject: `${inviter} invited you to their Fornetto kitchen`,
+            text: `${inviter} invited you to join "${householdName}" on Fornetto. Accept your invite: ${link}`,
             html: actionEmail({
                 heading: "You've been invited",
-                body: `${inviter} invited you to join “${householdName}” on Mise en Place — a shared pool of recipes, weekly menus and shopping lists. This invite expires in ${INVITE_TTL_DAYS} days.`,
+                body: `${inviter} invited you to join “${householdName}” on Fornetto — a shared pool of recipes, weekly menus and shopping lists. This invite expires in ${INVITE_TTL_DAYS} days.`,
                 buttonLabel: "Join the household",
                 url: link,
             }),
