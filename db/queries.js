@@ -163,7 +163,7 @@ async function createRecipe(data, householdId, userId) {
                 [tagIds[i], recipeId],
             );
         }
-        return;
+        return recipeId;
     } catch (error) {
         console.error(error);
     }
@@ -833,6 +833,42 @@ async function recordImport(householdId, action) {
     );
 }
 
+// ========= RECIPE SHARING ========= //
+// A share link is a stable token per recipe. Anyone signed in can preview it and
+// save a copy into their own household.
+
+async function getOrCreateShareToken(recipeId, userId) {
+    const existing = await pool.query(
+        "SELECT token FROM recipe_shares WHERE recipe_id = $1",
+        [recipeId],
+    );
+    if (existing.rows[0]) return existing.rows[0].token;
+
+    // ON CONFLICT handles a concurrent share of the same recipe (recipe_id is
+    // unique) — return whichever token won the race.
+    const { rows } = await pool.query(
+        `INSERT INTO recipe_shares (recipe_id, created_by)
+         VALUES ($1, $2)
+         ON CONFLICT (recipe_id) DO UPDATE SET recipe_id = EXCLUDED.recipe_id
+         RETURNING token`,
+        [recipeId, userId],
+    );
+    return rows[0].token;
+}
+
+// Resolve a token to its source recipe row (or null for an unknown token / a
+// recipe that has since been deleted — the share row cascades away with it).
+async function getSharedRecipeByToken(token) {
+    const { rows } = await pool.query(
+        `SELECT r.*
+         FROM recipe_shares rs
+         INNER JOIN recipes r ON r.id = rs.recipe_id
+         WHERE rs.token = $1`,
+        [token],
+    );
+    return rows[0] ?? null;
+}
+
 module.exports = {
     getHouseholdIdForUser,
     ensureHouseholdForUser,
@@ -878,4 +914,6 @@ module.exports = {
     getCustomProductByName,
     countRecentImports,
     recordImport,
+    getOrCreateShareToken,
+    getSharedRecipeByToken,
 };

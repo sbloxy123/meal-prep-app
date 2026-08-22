@@ -29,6 +29,7 @@ app.use((req, res, next) => {
 app.use(express.json());
 
 const recipesRouter = require("./routes/recipesRouter");
+const sharedRecipeRouter = require("./routes/sharedRecipeRouter");
 const shoppingListRouter = require("./routes/shoppingListRouter");
 const generatedShoppingListRouter = require("./routes/generatedShoppingListRouter");
 const householdRouter = require("./routes/householdRouter");
@@ -37,6 +38,7 @@ const { requireAuth } = require("./middleware/requireAuth");
 
 app.use("/shopping-list", requireAuth, shoppingListRouter);
 app.use("/recipes", requireAuth, recipesRouter);
+app.use("/shared-recipe", requireAuth, sharedRecipeRouter);
 app.use("/generated-shopping-list", requireAuth, generatedShoppingListRouter);
 app.use("/household", requireAuth, householdRouter);
 

@@ -15,6 +15,7 @@ const FETCH_TIMEOUT_MS = 10_000;
 const MAX_BODY_BYTES = 2 * 1024 * 1024; // 2 MB
 const MAX_REDIRECTS = 3;
 const IMPORT_LIMIT = 20;
+const GENERATE_LIMIT = 15;
 const BROWSER_UA =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -538,4 +539,101 @@ Return ONLY valid raw JSON (no markdown, no code fences) in exactly this shape:
     }
 }
 
-module.exports = { importRecipe, estimateMacros };
+async function generateFromTitle(req, res, next) {
+    try {
+        const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
+        if (!title) {
+            return res.status(400).json({ error: "A recipe title is required" });
+        }
+
+        const householdId = req.householdId;
+        const recent = await db.countRecentImports(householdId, "generate");
+        if (recent >= GENERATE_LIMIT) {
+            return res.status(429).json({
+                error: "Generation limit reached — 15 per 6 hours. Try again later.",
+            });
+        }
+        await db.recordImport(householdId, "generate");
+
+        const message = await client.messages.create({
+            model: AI_MODEL,
+            max_tokens: 2048,
+            messages: [
+                {
+                    role: "user",
+                    content: `You are a recipe writer. Invent a sensible, common-sense recipe for this dish.
+Dish title: ${title}
+
+Return ONLY valid raw JSON (no markdown, no code fences) in EXACTLY this shape:
+{
+  "title": string,
+  "description": string | null,
+  "instructions": string,              // steps joined by newline characters
+  "ingredients": [ { "name": string, "quantity": "", "unit": "" } ],
+  "prep_time_minutes": number | null,
+  "cook_time_minutes": number | null,
+  "servings": number | null,
+  "calories": number | null,           // per serving, kcal
+  "protein_g": number | null,          // per serving, grams
+  "carb_g": number | null,             // per serving, grams
+  "fat_g": number | null               // per serving, grams
+}
+Each ingredient "name" is the full line (e.g. "500g beef mince"); leave quantity and unit as empty strings.
+Give realistic quantities in the ingredient names and estimate the per-serving macros.`,
+                },
+            ],
+        });
+
+        const raw = stripFences(message.content[0].text);
+        let data;
+        try {
+            data = JSON.parse(raw);
+        } catch {
+            try {
+                data = JSON.parse(jsonrepair(raw));
+            } catch {
+                return res.status(400).json({ error: "Could not generate a recipe for that title" });
+            }
+        }
+        if (!data || !data.title) {
+            return res.status(400).json({ error: "Could not generate a recipe for that title" });
+        }
+
+        const nutrition = mapNutrition({
+            calories: data.calories,
+            proteinContent: data.protein_g,
+            carbohydrateContent: data.carb_g,
+            fatContent: data.fat_g,
+        });
+
+        res.json({
+            title: data.title,
+            description: data.description || null,
+            instructions:
+                typeof data.instructions === "string"
+                    ? data.instructions
+                    : flattenInstructions(data.instructions).join("\n"),
+            link_url: null,
+            prep_time_minutes: firstInt(data.prep_time_minutes),
+            cook_time_minutes: firstInt(data.cook_time_minutes),
+            ingredients: mapIngredients(
+                Array.isArray(data.ingredients)
+                    ? data.ingredients.map((i) => (typeof i === "string" ? i : i?.name))
+                    : [],
+            ),
+            collections: ["Generated"],
+            image_url: null,
+            image_public_id: null,
+            servings: firstInt(data.servings),
+            calories: nutrition.calories,
+            protein_g: nutrition.protein_g,
+            carb_g: nutrition.carb_g,
+            fat_g: nutrition.fat_g,
+            macros_source: nutrition.found ? "estimated" : null,
+        });
+    } catch (error) {
+        next(error);
+    }
+}
+
+module.exports = { importRecipe, estimateMacros, generateFromTitle };
