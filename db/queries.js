@@ -106,6 +106,12 @@ async function createRecipe(data, householdId, userId) {
         tags,
         image_url,
         image_public_id,
+        servings,
+        calories,
+        protein_g,
+        carb_g,
+        fat_g,
+        macros_source,
     } = data;
 
     const ingredientIds = await Promise.all(
@@ -118,7 +124,7 @@ async function createRecipe(data, householdId, userId) {
 
     try {
         const { rows } = await pool.query(
-            "INSERT INTO recipes (title, description, instructions, link_url, prep_time_minutes, cook_time_minutes, image_url, image_public_id, household_id, user_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id",
+            "INSERT INTO recipes (title, description, instructions, link_url, prep_time_minutes, cook_time_minutes, image_url, image_public_id, servings, calories, protein_g, carb_g, fat_g, macros_source, household_id, user_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING id",
             [
                 recipe_title,
                 recipe_description,
@@ -128,6 +134,12 @@ async function createRecipe(data, householdId, userId) {
                 cook_time_minutes,
                 image_url ?? null,
                 image_public_id ?? null,
+                servings ?? null,
+                calories ?? null,
+                protein_g ?? null,
+                carb_g ?? null,
+                fat_g ?? null,
+                macros_source ?? null,
                 householdId,
                 userId,
             ],
@@ -234,14 +246,22 @@ async function updateRecipe(data, recipeId, householdId) {
             tags,
             image_url,
             image_public_id,
+            servings,
+            calories,
+            protein_g,
+            carb_g,
+            fat_g,
+            macros_source,
         } = data;
 
         await pool.query(
             `UPDATE recipes
              SET title = $1, description = $2, instructions = $3,
                  link_url = $4, prep_time_minutes = $5, cook_time_minutes = $6,
-                 image_url = $7, image_public_id = $8
-             WHERE id = $9 AND household_id = $10`,
+                 image_url = $7, image_public_id = $8,
+                 servings = $9, calories = $10, protein_g = $11,
+                 carb_g = $12, fat_g = $13, macros_source = $14
+             WHERE id = $15 AND household_id = $16`,
             [
                 recipe_title,
                 recipe_description,
@@ -251,6 +271,12 @@ async function updateRecipe(data, recipeId, householdId) {
                 cook_time_minutes,
                 image_url ?? null,
                 image_public_id ?? null,
+                servings ?? null,
+                calories ?? null,
+                protein_g ?? null,
+                carb_g ?? null,
+                fat_g ?? null,
+                macros_source ?? null,
                 recipeId,
                 householdId,
             ],
@@ -783,6 +809,30 @@ async function removeMember(householdId, targetUserId) {
     }
 }
 
+// ========= RECIPE IMPORT RATE LIMITING ========= //
+// The import/estimate endpoints each incur a fetch + LLM cost per call, so we
+// rate-limit by counting calls (not saved recipes) in a rolling 6-hour window,
+// scoped per household. `action` keeps the two endpoints on independent windows.
+
+async function countRecentImports(householdId, action) {
+    const { rows } = await pool.query(
+        `SELECT count(*)::int AS count
+         FROM recipe_imports
+         WHERE household_id = $1
+           AND action = $2
+           AND created_at > now() - interval '6 hours'`,
+        [householdId, action],
+    );
+    return rows[0].count;
+}
+
+async function recordImport(householdId, action) {
+    await pool.query(
+        "INSERT INTO recipe_imports (household_id, action) VALUES ($1, $2)",
+        [householdId, action],
+    );
+}
+
 module.exports = {
     getHouseholdIdForUser,
     ensureHouseholdForUser,
@@ -826,4 +876,6 @@ module.exports = {
     setRecipeFavorite,
     deleteProductItemBoth,
     getCustomProductByName,
+    countRecentImports,
+    recordImport,
 };

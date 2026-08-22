@@ -1,0 +1,529 @@
+const cheerio = require("cheerio");
+const Anthropic = require("@anthropic-ai/sdk");
+const { jsonrepair } = require("jsonrepair");
+
+const db = require("../db/queries");
+const { assertSafeUrl } = require("../lib/urlGuard");
+const { uploadFromUrl } = require("../lib/cloudinary");
+const { importUrlSchema, estimateMacrosSchema } = require("../schemas/recipe.schema.js");
+
+// Reuse the same LLM client/model as shoppingListController (parse-ingredients).
+const client = new Anthropic();
+const AI_MODEL = "claude-haiku-4-5-20251001";
+
+const FETCH_TIMEOUT_MS = 10_000;
+const MAX_BODY_BYTES = 2 * 1024 * 1024; // 2 MB
+const MAX_REDIRECTS = 3;
+const IMPORT_LIMIT = 20;
+const BROWSER_UA =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+// ---------- small parsing helpers ----------
+
+// ISO-8601 duration (PT15M, PT1H30M, P0DT0H45M) → whole minutes, or null.
+function isoDurationToMinutes(value) {
+    if (typeof value !== "string") return null;
+    const match = value.match(
+        /P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?/,
+    );
+    if (!match) return null;
+    const [, d, h, m, s] = match.map((x) => (x ? Number(x) : 0));
+    const total = d * 1440 + h * 60 + m + Math.round(s / 60);
+    return total > 0 ? total : null;
+}
+
+// "240 calories" / "18 g" / "18.5g" / 18 → 18 (number) or null.
+function parseNumeric(value) {
+    if (value == null) return null;
+    if (typeof value === "number") return Number.isFinite(value) ? value : null;
+    const match = String(value).match(/-?\d+(?:\.\d+)?/);
+    return match ? Number(match[0]) : null;
+}
+
+function firstInt(value) {
+    const n = parseNumeric(Array.isArray(value) ? value[0] : value);
+    return n == null ? null : Math.round(n);
+}
+
+// image may be a string, { url }, an array of either, or an ImageObject.
+function extractImageUrl(image) {
+    if (!image) return null;
+    if (typeof image === "string") return image;
+    if (Array.isArray(image)) {
+        for (const item of image) {
+            const url = extractImageUrl(item);
+            if (url) return url;
+        }
+        return null;
+    }
+    if (typeof image === "object") return image.url || null;
+    return null;
+}
+
+// recipeInstructions: plain string | array of strings/HowToStep | HowToSection
+// (with nested itemListElement). Flatten to an array of step strings.
+function flattenInstructions(instructions) {
+    if (!instructions) return [];
+    if (typeof instructions === "string") {
+        return instructions
+            .split(/\r?\n/)
+            .map((s) => s.trim())
+            .filter(Boolean);
+    }
+    if (!Array.isArray(instructions)) instructions = [instructions];
+
+    const steps = [];
+    for (const item of instructions) {
+        if (typeof item === "string") {
+            const t = item.trim();
+            if (t) steps.push(t);
+        } else if (item && typeof item === "object") {
+            const type = normaliseType(item["@type"]);
+            if (type.includes("HowToSection") && item.itemListElement) {
+                steps.push(...flattenInstructions(item.itemListElement));
+            } else if (item.text) {
+                const t = String(item.text).trim();
+                if (t) steps.push(t);
+            } else if (item.name) {
+                const t = String(item.name).trim();
+                if (t) steps.push(t);
+            }
+        }
+    }
+    return steps;
+}
+
+// @type may be a string or an array of strings — normalise to a string[].
+function normaliseType(type) {
+    if (!type) return [];
+    return (Array.isArray(type) ? type : [type]).map(String);
+}
+
+// Map schema.org NutritionInformation → our macro fields (per serving).
+function mapNutrition(nutrition) {
+    if (!nutrition || typeof nutrition !== "object") {
+        return { calories: null, protein_g: null, carb_g: null, fat_g: null, found: false };
+    }
+    const calories = firstInt(nutrition.calories);
+    const protein_g = parseNumeric(nutrition.proteinContent);
+    const carb_g = parseNumeric(nutrition.carbohydrateContent);
+    const fat_g = parseNumeric(nutrition.fatContent);
+    const found =
+        calories != null || protein_g != null || carb_g != null || fat_g != null;
+    return { calories, protein_g, carb_g, fat_g, found };
+}
+
+function mapIngredients(recipeIngredient) {
+    if (!Array.isArray(recipeIngredient)) return [];
+    return recipeIngredient
+        .map((raw) => (typeof raw === "string" ? raw : raw?.name || ""))
+        .map((s) => s.replace(/\s+/g, " ").trim())
+        .filter(Boolean)
+        .map((name) => ({ name, quantity: "", unit: "" }));
+}
+
+// Build the draft response shape from a set of already-extracted fields.
+function buildDraft(fields, sourceUrl) {
+    const nutrition = mapNutrition(fields.nutrition);
+    const servings = firstInt(fields.recipeYield);
+    // Provenance is "imported" only when we actually scraped nutrition macros;
+    // servings alone (recipeYield) is not nutrition data.
+    const hasMacros = nutrition.found;
+
+    return {
+        title: fields.title || null,
+        description: fields.description || null,
+        instructions: fields.instructions || "",
+        link_url: sourceUrl,
+        prep_time_minutes: isoDurationToMinutes(fields.prepTime),
+        cook_time_minutes: isoDurationToMinutes(fields.cookTime),
+        ingredients: fields.ingredients || [],
+        collections: ["Imported"],
+        image_url: null,
+        image_public_id: null,
+        _imageUrl: fields.imageUrl || null, // internal, stripped before responding
+        servings,
+        calories: nutrition.calories,
+        protein_g: nutrition.protein_g,
+        carb_g: nutrition.carb_g,
+        fat_g: nutrition.fat_g,
+        macros_source: hasMacros ? "imported" : null,
+    };
+}
+
+// ---------- tier 1: JSON-LD ----------
+
+function findRecipeNode(node, seen = new Set()) {
+    if (!node || typeof node !== "object" || seen.has(node)) return null;
+    seen.add(node);
+
+    if (Array.isArray(node)) {
+        for (const item of node) {
+            const found = findRecipeNode(item, seen);
+            if (found) return found;
+        }
+        return null;
+    }
+    if (normaliseType(node["@type"]).includes("Recipe")) return node;
+    if (Array.isArray(node["@graph"])) {
+        const found = findRecipeNode(node["@graph"], seen);
+        if (found) return found;
+    }
+    return null;
+}
+
+function extractFromJsonLd($) {
+    const scripts = $('script[type="application/ld+json"]');
+    for (let i = 0; i < scripts.length; i++) {
+        const raw = $(scripts[i]).contents().text();
+        if (!raw || !raw.trim()) continue;
+        let data;
+        try {
+            data = JSON.parse(raw);
+        } catch {
+            try {
+                data = JSON.parse(jsonrepair(raw));
+            } catch {
+                continue;
+            }
+        }
+        const recipe = findRecipeNode(data);
+        if (recipe) {
+            return {
+                title: recipe.name,
+                description: recipe.description,
+                imageUrl: extractImageUrl(recipe.image),
+                ingredients: mapIngredients(recipe.recipeIngredient),
+                instructions: flattenInstructions(recipe.recipeInstructions).join("\n"),
+                prepTime: recipe.prepTime,
+                cookTime: recipe.cookTime,
+                nutrition: recipe.nutrition,
+                recipeYield: recipe.recipeYield,
+            };
+        }
+    }
+    return null;
+}
+
+// ---------- tier 2: microdata ----------
+
+function extractFromMicrodata($) {
+    const scope = $('[itemtype*="Recipe"]').first();
+    if (scope.length === 0) return null;
+
+    const prop = (name) =>
+        scope.find(`[itemprop="${name}"]`).map((_, el) => {
+            const $el = $(el);
+            return ($el.attr("content") || $el.attr("datetime") || $el.text() || "").trim();
+        }).get().filter(Boolean);
+
+    const first = (name) => prop(name)[0] || undefined;
+
+    const imageEl = scope.find('[itemprop="image"]').first();
+    const imageUrl =
+        imageEl.attr("src") || imageEl.attr("content") || imageEl.attr("href") || null;
+
+    const nutritionScope = scope.find('[itemprop="nutrition"]').first();
+    const nutrition = nutritionScope.length
+        ? {
+              calories: nutritionScope.find('[itemprop="calories"]').first().text().trim(),
+              proteinContent: nutritionScope.find('[itemprop="proteinContent"]').first().text().trim(),
+              carbohydrateContent: nutritionScope.find('[itemprop="carbohydrateContent"]').first().text().trim(),
+              fatContent: nutritionScope.find('[itemprop="fatContent"]').first().text().trim(),
+          }
+        : null;
+
+    const ingredients = mapIngredients([
+        ...prop("recipeIngredient"),
+        ...prop("ingredients"),
+    ]);
+    const instructions = prop("recipeInstructions").join("\n");
+    const title = first("name");
+
+    if (!title && ingredients.length === 0 && !instructions) return null;
+
+    return {
+        title,
+        description: first("description"),
+        imageUrl,
+        ingredients,
+        instructions,
+        prepTime: first("prepTime"),
+        cookTime: first("cookTime"),
+        nutrition,
+        recipeYield: first("recipeYield"),
+    };
+}
+
+// ---------- tier 3: AI fallback ----------
+
+function pageToText($) {
+    $("script, style, noscript, nav, header, footer, svg, iframe").remove();
+    return $("body").text().replace(/\s+/g, " ").trim().slice(0, 12_000);
+}
+
+function stripFences(text) {
+    return text.replace(/^```json\n?/, "").replace(/\n?```$/, "").trim();
+}
+
+async function extractWithAI($) {
+    const text = pageToText($);
+    if (!text) return null;
+
+    const message = await client.messages.create({
+        model: AI_MODEL,
+        max_tokens: 2048,
+        messages: [
+            {
+                role: "user",
+                content: `You extract structured recipe data from the readable text of a web page.
+Return ONLY valid raw JSON (no markdown, no code fences) in EXACTLY this shape:
+{
+  "title": string,
+  "description": string | null,
+  "instructions": string,              // steps joined by newline characters
+  "prep_time_minutes": number | null,
+  "cook_time_minutes": number | null,
+  "ingredients": [ { "name": string, "quantity": "", "unit": "" } ],
+  "servings": number | null,
+  "calories": number | null,           // per serving, kcal
+  "protein_g": number | null,          // per serving, grams
+  "carb_g": number | null,             // per serving, grams
+  "fat_g": number | null               // per serving, grams
+}
+Each ingredient "name" is the full line (e.g. "500g beef mince"); leave quantity and unit as empty strings.
+If the text is not a recipe, return {"title": null}.
+Page text:
+${text}`,
+            },
+        ],
+    });
+
+    const raw = stripFences(message.content[0].text);
+    let data;
+    try {
+        data = JSON.parse(raw);
+    } catch {
+        try {
+            data = JSON.parse(jsonrepair(raw));
+        } catch {
+            return null;
+        }
+    }
+    if (!data || !data.title) return null;
+
+    const nutrition = {
+        calories: data.calories,
+        proteinContent: data.protein_g,
+        carbohydrateContent: data.carb_g,
+        fatContent: data.fat_g,
+    };
+    return {
+        title: data.title,
+        description: data.description,
+        imageUrl: null,
+        ingredients: mapIngredients(
+            Array.isArray(data.ingredients)
+                ? data.ingredients.map((i) => (typeof i === "string" ? i : i?.name))
+                : [],
+        ),
+        instructions: typeof data.instructions === "string" ? data.instructions : "",
+        prepTime: data.prep_time_minutes ? `PT${data.prep_time_minutes}M` : null,
+        cookTime: data.cook_time_minutes ? `PT${data.cook_time_minutes}M` : null,
+        nutrition,
+        recipeYield: data.servings,
+    };
+}
+
+// ---------- fetching (SSRF-guarded, timeout, size cap, redirects) ----------
+
+async function fetchPage(rawUrl) {
+    let url = rawUrl;
+    for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+        await assertSafeUrl(url); // re-validate every hop
+
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+        let response;
+        try {
+            response = await fetch(url, {
+                headers: { "User-Agent": BROWSER_UA, Accept: "text/html,*/*" },
+                redirect: "manual",
+                signal: controller.signal,
+            });
+        } finally {
+            clearTimeout(timer);
+        }
+
+        if (response.status >= 300 && response.status < 400) {
+            const location = response.headers.get("location");
+            if (!location) throw new Error("Could not fetch that page");
+            url = new URL(location, url).toString();
+            continue;
+        }
+        if (!response.ok) throw new Error("Could not fetch that page");
+
+        const declared = Number(response.headers.get("content-length"));
+        if (declared && declared > MAX_BODY_BYTES) {
+            throw new Error("That page is too large to import");
+        }
+        return await readCapped(response);
+    }
+    throw new Error("Too many redirects");
+}
+
+async function readCapped(response) {
+    if (!response.body) return await response.text();
+    const reader = response.body.getReader();
+    const chunks = [];
+    let total = 0;
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.length;
+        if (total > MAX_BODY_BYTES) {
+            reader.cancel();
+            throw new Error("That page is too large to import");
+        }
+        chunks.push(value);
+    }
+    return Buffer.concat(chunks).toString("utf8");
+}
+
+// ---------- controllers ----------
+
+async function importRecipe(req, res, next) {
+    try {
+        const parsed = importUrlSchema.safeParse(req.body);
+        if (!parsed.success) {
+            return res.status(400).json({ error: "A valid URL is required" });
+        }
+        const { url } = parsed.data;
+
+        // Validate scheme/host up front so a bad/blocked URL is a clean 400
+        // before we spend a rate-limit slot.
+        try {
+            await assertSafeUrl(url);
+        } catch (guardError) {
+            return res.status(400).json({ error: guardError.message });
+        }
+
+        const householdId = req.householdId;
+        const recent = await db.countRecentImports(householdId, "import");
+        if (recent >= IMPORT_LIMIT) {
+            return res.status(429).json({
+                error: "Import limit reached — 20 per 6 hours. Try again later.",
+            });
+        }
+        await db.recordImport(householdId, "import");
+
+        let html;
+        try {
+            html = await fetchPage(url);
+        } catch (fetchError) {
+            return res.status(400).json({ error: fetchError.message });
+        }
+
+        const $ = cheerio.load(html);
+        let fields = extractFromJsonLd($) || extractFromMicrodata($);
+        if (!fields) {
+            try {
+                fields = await extractWithAI($);
+            } catch (aiError) {
+                console.error("[import] AI fallback failed:", aiError.message);
+            }
+        }
+
+        if (!fields || (!fields.title && (fields.ingredients || []).length === 0)) {
+            return res.status(400).json({
+                error: "No recipe could be extracted from that URL.",
+            });
+        }
+
+        const draft = buildDraft(fields, url);
+
+        // Upload the scraped image to Cloudinary so we never return a raw
+        // third-party URL (null if Cloudinary isn't configured or upload fails).
+        if (draft._imageUrl) {
+            const uploaded = await uploadFromUrl(draft._imageUrl);
+            if (uploaded) {
+                draft.image_url = uploaded.image_url;
+                draft.image_public_id = uploaded.image_public_id;
+            }
+        }
+        delete draft._imageUrl;
+
+        res.json(draft);
+    } catch (error) {
+        next(error);
+    }
+}
+
+async function estimateMacros(req, res, next) {
+    try {
+        const parsed = estimateMacrosSchema.safeParse(req.body);
+        if (!parsed.success) {
+            return res.status(400).json({ error: "title and ingredients are required" });
+        }
+        const { title, servings, ingredients } = parsed.data;
+
+        const householdId = req.householdId;
+        const recent = await db.countRecentImports(householdId, "estimate");
+        if (recent >= IMPORT_LIMIT) {
+            return res.status(429).json({
+                error: "Estimate limit reached — 20 per 6 hours. Try again later.",
+            });
+        }
+        await db.recordImport(householdId, "estimate");
+
+        const servingsText = servings && servings > 0 ? servings : "an unknown number of";
+        const ingredientLines = ingredients
+            .map((i) => [i.quantity, i.unit, i.name].filter(Boolean).join(" ").trim())
+            .filter(Boolean)
+            .join("\n");
+
+        const message = await client.messages.create({
+            model: AI_MODEL,
+            max_tokens: 512,
+            messages: [
+                {
+                    role: "user",
+                    content: `You are a nutrition estimator. Estimate the nutrition for this recipe.
+Recipe title: ${title || "(untitled)"}
+This recipe makes ${servingsText} servings.
+Ingredients:
+${ingredientLines}
+
+Estimate the macros PER SERVING. If you reason about whole-recipe totals, divide by the number of servings before answering.
+Return ONLY valid raw JSON (no markdown, no code fences) in exactly this shape:
+{ "calories": number, "protein_g": number, "carb_g": number, "fat_g": number }
+All values are per serving; calories in kcal, the rest in grams.`,
+                },
+            ],
+        });
+
+        const raw = stripFences(message.content[0].text);
+        let data;
+        try {
+            data = JSON.parse(raw);
+        } catch {
+            try {
+                data = JSON.parse(jsonrepair(raw));
+            } catch {
+                return res.status(400).json({ error: "Could not estimate macros" });
+            }
+        }
+
+        res.json({
+            calories: parseNumeric(data.calories),
+            protein_g: parseNumeric(data.protein_g),
+            carb_g: parseNumeric(data.carb_g),
+            fat_g: parseNumeric(data.fat_g),
+        });
+    } catch (error) {
+        next(error);
+    }
+}
+
+module.exports = { importRecipe, estimateMacros };
