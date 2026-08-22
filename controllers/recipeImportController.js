@@ -477,11 +477,18 @@ async function estimateMacros(req, res, next) {
         }
         await db.recordImport(householdId, "estimate");
 
-        const servingsText = servings && servings > 0 ? servings : "an unknown number of";
+        const knownServings = servings && servings > 0 ? servings : null;
         const ingredientLines = ingredients
             .map((i) => [i.quantity, i.unit, i.name].filter(Boolean).join(" ").trim())
             .filter(Boolean)
             .join("\n");
+
+        // When the caller doesn't know the serving count, have the model infer a
+        // sensible one from the ingredient amounts rather than guessing blindly,
+        // and return it so the UI can show what the per-serving numbers assume.
+        const servingsInstruction = knownServings
+            ? `This recipe makes ${knownServings} servings. Use exactly that serving count.`
+            : `The number of servings isn't given. Estimate a typical serving count for this dish yourself from the ingredient amounts (default to 4 if truly unclear), then give macros per single serving.`;
 
         const message = await client.messages.create({
             model: AI_MODEL,
@@ -491,14 +498,14 @@ async function estimateMacros(req, res, next) {
                     role: "user",
                     content: `You are a nutrition estimator. Estimate the nutrition for this recipe.
 Recipe title: ${title || "(untitled)"}
-This recipe makes ${servingsText} servings.
+${servingsInstruction}
 Ingredients:
 ${ingredientLines}
 
-Estimate the macros PER SERVING. If you reason about whole-recipe totals, divide by the number of servings before answering.
+Estimate the macros PER SERVING. If you reason about whole-recipe totals, divide by the serving count before answering.
 Return ONLY valid raw JSON (no markdown, no code fences) in exactly this shape:
-{ "calories": number, "protein_g": number, "carb_g": number, "fat_g": number }
-All values are per serving; calories in kcal, the rest in grams.`,
+{ "servings": number, "calories": number, "protein_g": number, "carb_g": number, "fat_g": number }
+"servings" is the serving count the macros are based on (echo the given count, or your inferred one). All macro values are per serving; calories in kcal, the rest in grams.`,
                 },
             ],
         });
@@ -515,7 +522,12 @@ All values are per serving; calories in kcal, the rest in grams.`,
             }
         }
 
+        // Prefer the caller's serving count; otherwise use the model's inferred
+        // one (falling back to 4 if it didn't return a usable number).
+        const resolvedServings = knownServings ?? firstInt(data.servings) ?? 4;
+
         res.json({
+            servings: resolvedServings,
             calories: parseNumeric(data.calories),
             protein_g: parseNumeric(data.protein_g),
             carb_g: parseNumeric(data.carb_g),
