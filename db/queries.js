@@ -869,6 +869,21 @@ async function getSharedRecipeByToken(token) {
     return rows[0] ?? null;
 }
 
+// ========= ADMIN ANALYTICS ========= //
+// Append-only usage event. Fire-and-forget: analytics must never break or slow
+// a write, so this swallows its own errors and callers do not await it.
+async function recordEvent(type, { userId = null, householdId = null, meta = null } = {}) {
+    try {
+        await pool.query(
+            `INSERT INTO app_events (type, user_id, household_id, meta)
+             VALUES ($1, $2, $3, $4)`,
+            [type, userId, householdId, meta ? JSON.stringify(meta) : null],
+        );
+    } catch (error) {
+        console.error("recordEvent failed:", error.message);
+    }
+}
+
 module.exports = {
     getHouseholdIdForUser,
     ensureHouseholdForUser,
@@ -916,4 +931,5 @@ module.exports = {
     recordImport,
     getOrCreateShareToken,
     getSharedRecipeByToken,
+    recordEvent,
 };

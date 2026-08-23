@@ -23,6 +23,11 @@ async function createShoppingList(req, res, next) {
         }
 
         await db.createShoppingList(result.data, req.householdId, req.user.id);
+        db.recordEvent("week_add", {
+            userId: req.user.id,
+            householdId: req.householdId,
+            meta: result.data.recipeId ? { recipe_id: result.data.recipeId } : null,
+        });
         res.status(201).json({ success: true });
     } catch (error) {
         next(error);
@@ -208,6 +213,10 @@ async function organiseShoppingList(req, res, next) {
         }
 
         await db.createShoppingListByAisles(result, householdId);
+        db.recordEvent("list_generated", {
+            userId: req.user.id,
+            householdId,
+        });
         res.json({ success: true });
     } catch (error) {
         next(error);

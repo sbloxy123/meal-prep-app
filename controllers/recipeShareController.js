@@ -9,6 +9,11 @@ async function shareRecipe(req, res, next) {
         if (!recipe) return res.status(404).json({ error: "Recipe not found" });
 
         const token = await db.getOrCreateShareToken(recipe.id, req.user.id);
+        db.recordEvent("recipe_shared", {
+            userId: req.user.id,
+            householdId: req.householdId,
+            meta: { recipe_id: recipe.id },
+        });
         res.json({ token });
     } catch (error) {
         next(error);
@@ -94,6 +99,11 @@ async function saveSharedRecipe(req, res, next) {
         };
 
         const id = await db.createRecipe(data, req.householdId, req.user.id);
+        db.recordEvent("share_saved", {
+            userId: req.user.id,
+            householdId: req.householdId,
+            meta: id ? { recipe_id: id } : null,
+        });
         res.status(201).json({ id });
     } catch (error) {
         next(error);

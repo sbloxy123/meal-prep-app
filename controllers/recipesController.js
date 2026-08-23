@@ -48,7 +48,12 @@ async function createRecipe(req, res, next) {
                 "https://" + data.recipe_link_url.replace(/^https?:\/\//, "");
         }
 
-        await db.createRecipe(data, req.householdId, req.user.id);
+        const newRecipeId = await db.createRecipe(data, req.householdId, req.user.id);
+        db.recordEvent("recipe_created", {
+            userId: req.user.id,
+            householdId: req.householdId,
+            meta: newRecipeId ? { recipe_id: newRecipeId } : null,
+        });
         res.status(201).json({ success: true });
     } catch (error) {
         next(error);

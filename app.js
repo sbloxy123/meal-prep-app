@@ -33,14 +33,17 @@ const sharedRecipeRouter = require("./routes/sharedRecipeRouter");
 const shoppingListRouter = require("./routes/shoppingListRouter");
 const generatedShoppingListRouter = require("./routes/generatedShoppingListRouter");
 const householdRouter = require("./routes/householdRouter");
+const adminRouter = require("./routes/adminRouter");
 const initializeDatabase = require("./db/init");
 const { requireAuth } = require("./middleware/requireAuth");
+const { requireAdmin } = require("./middleware/requireAdmin");
 
 app.use("/shopping-list", requireAuth, shoppingListRouter);
 app.use("/recipes", requireAuth, recipesRouter);
 app.use("/shared-recipe", requireAuth, sharedRecipeRouter);
 app.use("/generated-shopping-list", requireAuth, generatedShoppingListRouter);
 app.use("/household", requireAuth, householdRouter);
+app.use("/admin", requireAuth, requireAdmin, adminRouter);
 
 app.get("/", (req, res) => res.json({ status: "ok" }));
 

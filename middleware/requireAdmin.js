@@ -1,0 +1,18 @@
+// Admin gate for the read-only /admin dashboard. Runs AFTER requireAuth (so
+// req.user is set). The email allowlist is the real security boundary — the
+// obscure frontend route (/back-of-house) adds nothing on its own. Set
+// ADMIN_EMAILS (comma-separated) in the environment; anyone else gets 403.
+function requireAdmin(req, res, next) {
+    const allow = (process.env.ADMIN_EMAILS || "")
+        .split(",")
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean);
+
+    const email = (req.user?.email || "").toLowerCase();
+    if (!email || !allow.includes(email)) {
+        return res.status(403).json({ error: "Forbidden" });
+    }
+    next();
+}
+
+module.exports = { requireAdmin };
