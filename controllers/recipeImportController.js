@@ -8,6 +8,7 @@ const { uploadFromUrl } = require("../lib/cloudinary");
 const {
     importUrlSchema,
     estimateMacrosSchema,
+    improveRecipeSchema,
     parsePhotoSchema,
 } = require("../schemas/recipe.schema.js");
 
@@ -25,6 +26,7 @@ const MAX_REDIRECTS = 3;
 const IMPORT_LIMIT = 20;
 const GENERATE_LIMIT = 15;
 const PHOTO_LIMIT = 15;
+const IMPROVE_LIMIT = 15;
 // Defense-in-depth cap on decoded image bytes (base64 ~4/3 the raw size); the
 // route body parser (app.js) caps the payload itself.
 const MAX_TOTAL_IMAGE_BYTES = 12 * 1024 * 1024; // 12 MB
@@ -551,6 +553,128 @@ Return ONLY valid raw JSON (no markdown, no code fences) in exactly this shape:
     }
 }
 
+async function improveRecipe(req, res, next) {
+    try {
+        const parsed = improveRecipeSchema.safeParse(req.body);
+        if (!parsed.success) {
+            return res.status(400).json({ error: "title and ingredients are required" });
+        }
+        const { title, servings, description, instructions, ingredients } = parsed.data;
+
+        const householdId = req.householdId;
+        const recent = await db.countRecentImports(householdId, "improve");
+        if (recent >= IMPROVE_LIMIT) {
+            return res.status(429).json({
+                error: "Improve limit reached — 15 per 6 hours. Try again later.",
+            });
+        }
+        await db.recordImport(householdId, "improve");
+
+        const knownServings = servings && servings > 0 ? servings : null;
+        const servingsInstruction = knownServings
+            ? `This recipe makes ${knownServings} servings. Use exactly that serving count.`
+            : `The number of servings isn't given. Choose a sensible serving count for this dish (default to 4 if unclear).`;
+
+        // One numbered line per ingredient so the model returns them in the same
+        // order (the frontend maps the response back positionally and only fills
+        // fields the user left blank).
+        const ingredientLines = ingredients
+            .map((i, idx) => {
+                const amount = [i.quantity, i.unit].filter(Boolean).join(" ").trim();
+                return `${idx + 1}. ${i.name}${amount ? ` (currently: ${amount})` : ""}`;
+            })
+            .join("\n");
+
+        const message = await client.messages.create({
+            model: AI_MODEL,
+            max_tokens: 1536,
+            messages: [
+                {
+                    role: "user",
+                    content: `You are a cooking assistant. Improve this draft recipe by filling in the gaps so it's complete and sensible, WITHOUT changing what the dish is.
+
+Recipe title: ${title || "(untitled)"}
+${servingsInstruction}
+Current description: ${description ? description : "(none)"}
+Current method: ${instructions ? instructions : "(none)"}
+Ingredients (keep this exact list and order):
+${ingredientLines}
+
+Do the following:
+- For EACH ingredient, give a sensible amount for the serving count: a numeric "quantity" and a short "unit". Use metric UK units where sensible (g, ml, tbsp, tsp) or leave "unit" empty for whole counts (e.g. 1 onion, 2 eggs). Do NOT add, remove, reorder or rename ingredients.
+- If the method is missing or thin, write clear step-by-step instructions (one step per line).
+- If the description is missing, write a short one-sentence description.
+- Estimate the macros PER SERVING from the amounts.
+
+Return ONLY valid raw JSON (no markdown, no code fences) in EXACTLY this shape:
+{
+  "description": string,
+  "servings": number,
+  "instructions": string,              // steps joined by newline characters
+  "ingredients": [ { "name": string, "quantity": string, "unit": string } ],
+  "calories": number,                  // per serving, kcal
+  "protein_g": number,                 // per serving, grams
+  "carb_g": number,                    // per serving, grams
+  "fat_g": number                      // per serving, grams
+}
+"ingredients" MUST have the same length and order as the list above. "quantity" is a number written as a string (e.g. "500", "1.5", "2"); "unit" is a short unit or "" for whole counts.`,
+                },
+            ],
+        });
+
+        const raw = stripFences(message.content[0].text);
+        let data;
+        try {
+            data = JSON.parse(raw);
+        } catch {
+            try {
+                data = JSON.parse(jsonrepair(raw));
+            } catch {
+                return res.status(400).json({ error: "Could not improve this recipe" });
+            }
+        }
+        if (!data || typeof data !== "object") {
+            return res.status(400).json({ error: "Could not improve this recipe" });
+        }
+
+        // Normalise the returned ingredients to { name, quantity, unit } strings,
+        // preserving order. Fall back to the caller's own row if the model drops
+        // one, so the array stays aligned with the request.
+        const outIngredients = ingredients.map((row, idx) => {
+            const imp = Array.isArray(data.ingredients) ? data.ingredients[idx] : null;
+            const quantity = imp && imp.quantity != null ? String(imp.quantity).trim() : "";
+            const unit = imp && imp.unit != null ? String(imp.unit).trim() : "";
+            const name = imp && typeof imp.name === "string" && imp.name.trim() ? imp.name.trim() : row.name;
+            return { name, quantity, unit };
+        });
+
+        const nutrition = mapNutrition({
+            calories: data.calories,
+            proteinContent: data.protein_g,
+            carbohydrateContent: data.carb_g,
+            fatContent: data.fat_g,
+        });
+
+        res.json({
+            description: typeof data.description === "string" && data.description.trim()
+                ? data.description.trim()
+                : null,
+            servings: knownServings ?? firstInt(data.servings) ?? 4,
+            instructions:
+                typeof data.instructions === "string"
+                    ? data.instructions
+                    : flattenInstructions(data.instructions).join("\n"),
+            ingredients: outIngredients,
+            calories: nutrition.calories,
+            protein_g: nutrition.protein_g,
+            carb_g: nutrition.carb_g,
+            fat_g: nutrition.fat_g,
+        });
+    } catch (error) {
+        next(error);
+    }
+}
+
 async function generateFromTitle(req, res, next) {
     try {
         const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
@@ -830,4 +954,4 @@ async function parseFromPhoto(req, res, next) {
     }
 }
 
-module.exports = { importRecipe, estimateMacros, generateFromTitle, parseFromPhoto };
+module.exports = { importRecipe, estimateMacros, improveRecipe, generateFromTitle, parseFromPhoto };

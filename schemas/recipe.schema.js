@@ -42,6 +42,23 @@ const estimateMacrosSchema = z.object({
     ),
 });
 
+// POST /recipes/improve — an AI pass over a draft recipe that fills in missing
+// ingredient amounts, method and serving size, then re-estimates macros. Same
+// ingredient shape as estimate-macros; title/instructions/description optional.
+const improveRecipeSchema = z.object({
+    title: z.string().optional(),
+    servings: z.coerce.number().int().optional(),
+    description: z.string().optional(),
+    instructions: z.string().optional(),
+    ingredients: z.array(
+        z.object({
+            name: z.string(),
+            quantity: z.string().optional(),
+            unit: z.string().optional(),
+        }),
+    ),
+});
+
 // POST /recipes/parse-from-photo — 1–4 base64-encoded photos of a recipe.
 // Images are read by Claude vision and discarded; nothing is persisted.
 const parsePhotoSchema = z.object({
@@ -78,6 +95,7 @@ module.exports = {
     recipeSchema,
     importUrlSchema,
     estimateMacrosSchema,
+    improveRecipeSchema,
     parsePhotoSchema,
     recipeShoppingListSchema,
     customProductSchema,
