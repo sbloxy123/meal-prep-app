@@ -5,17 +5,29 @@ const { jsonrepair } = require("jsonrepair");
 const db = require("../db/queries");
 const { assertSafeUrl } = require("../lib/urlGuard");
 const { uploadFromUrl } = require("../lib/cloudinary");
-const { importUrlSchema, estimateMacrosSchema } = require("../schemas/recipe.schema.js");
+const {
+    importUrlSchema,
+    estimateMacrosSchema,
+    parsePhotoSchema,
+} = require("../schemas/recipe.schema.js");
 
 // Reuse the same LLM client/model as shoppingListController (parse-ingredients).
 const client = new Anthropic();
 const AI_MODEL = "claude-haiku-4-5-20251001";
+// Photo → recipe reads a cookbook page with vision. Haiku handles clean pages
+// cheaply; when it's unsure or its output fails validation we escalate the same
+// image(s) once to Sonnet, which reads dense/awkward pages more reliably.
+const VISION_ESCALATION_MODEL = "claude-sonnet-4-6";
 
 const FETCH_TIMEOUT_MS = 10_000;
 const MAX_BODY_BYTES = 2 * 1024 * 1024; // 2 MB
 const MAX_REDIRECTS = 3;
 const IMPORT_LIMIT = 20;
 const GENERATE_LIMIT = 15;
+const PHOTO_LIMIT = 15;
+// Defense-in-depth cap on decoded image bytes (base64 ~4/3 the raw size); the
+// route body parser (app.js) caps the payload itself.
+const MAX_TOTAL_IMAGE_BYTES = 12 * 1024 * 1024; // 12 MB
 const BROWSER_UA =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -636,4 +648,186 @@ Give realistic quantities in the ingredient names and estimate the per-serving m
     }
 }
 
-module.exports = { importRecipe, estimateMacros, generateFromTitle };
+// ---------- photo → recipe (vision) ----------
+
+const PHOTO_PROMPT = `You extract a single structured recipe from a photograph (or several photographs) of a recipe — typically a cookbook page, which may be spread across two facing pages. Treat all the images as ONE recipe.
+
+Return ONLY valid raw JSON (no markdown, no code fences) in EXACTLY this shape:
+{
+  "title": string,
+  "description": string | null,
+  "instructions": string,              // steps joined by newline characters
+  "ingredients": [ { "name": string, "quantity": "", "unit": "" } ],
+  "prep_time_minutes": number | null,
+  "cook_time_minutes": number | null,
+  "servings": number | null,
+  "calories": number | null,           // per serving, kcal, only if printed
+  "protein_g": number | null,          // per serving, grams, only if printed
+  "carb_g": number | null,             // per serving, grams, only if printed
+  "fat_g": number | null,              // per serving, grams, only if printed
+  "confidence": "high" | "low",        // see below
+  "issues": string | null              // brief note on anything unclear
+}
+Each ingredient "name" is the full line as written (e.g. "500g beef mince"), keeping its quantity in the text; leave the "quantity" and "unit" fields as empty strings.
+Only fill in macros that are actually printed on the page — do not estimate them; use null otherwise.
+Set "confidence" to "low" if any image is blurry, cropped, glare-obscured, or partly unreadable, or if you had to guess the title, ingredients, or steps. Otherwise "high".
+If the images do not contain a recipe, return {"title": null, "confidence": "low"}.`;
+
+// One vision call for the given model; returns { data, ok }. Mirrors the JSON
+// healing used by the other AI endpoints (JSON.parse → jsonrepair fallback).
+async function extractFromImages(images, model) {
+    const message = await client.messages.create({
+        model,
+        max_tokens: 2048,
+        messages: [
+            {
+                role: "user",
+                content: [
+                    ...images.map((img) => ({
+                        type: "image",
+                        source: {
+                            type: "base64",
+                            media_type: img.media_type,
+                            data: img.data,
+                        },
+                    })),
+                    { type: "text", text: PHOTO_PROMPT },
+                ],
+            },
+        ],
+    });
+
+    const raw = stripFences(message.content[0].text);
+    try {
+        return { data: JSON.parse(raw), ok: true };
+    } catch {
+        try {
+            return { data: JSON.parse(jsonrepair(raw)), ok: true };
+        } catch {
+            return { data: null, ok: false };
+        }
+    }
+}
+
+// Cheap structural checks — used (alongside the model's own confidence flag) to
+// decide whether to escalate to the stronger vision model.
+function validateDraft(data) {
+    if (!data || typeof data !== "object") return false;
+    if (typeof data.title !== "string" || !data.title.trim()) return false;
+
+    const ingredients = Array.isArray(data.ingredients) ? data.ingredients : [];
+    if (ingredients.length === 0) return false;
+
+    const instructions = typeof data.instructions === "string" ? data.instructions : "";
+    if (!instructions.trim()) return false;
+
+    // Soft check: OCR that drops amounts leaves ingredient lines with no digits.
+    // Flag when fewer than half the lines contain a number.
+    const names = ingredients.map((i) => (typeof i === "string" ? i : i?.name || ""));
+    const withQuantity = names.filter((n) => /\d/.test(n)).length;
+    if (names.length > 0 && withQuantity / names.length < 0.5) return false;
+
+    return true;
+}
+
+async function parseFromPhoto(req, res, next) {
+    try {
+        const parsed = parsePhotoSchema.safeParse(req.body);
+        if (!parsed.success) {
+            return res.status(400).json({ error: "At least one photo is required" });
+        }
+        const { images } = parsed.data;
+
+        const totalBytes = images.reduce(
+            (sum, img) => sum + Math.ceil((img.data.length * 3) / 4),
+            0,
+        );
+        if (totalBytes > MAX_TOTAL_IMAGE_BYTES) {
+            return res.status(413).json({ error: "Those photos are too large." });
+        }
+
+        const householdId = req.householdId;
+        const recent = await db.countRecentImports(householdId, "photo");
+        if (recent >= PHOTO_LIMIT) {
+            return res.status(429).json({
+                error: "Photo limit reached — 15 per 6 hours. Try again later.",
+            });
+        }
+        await db.recordImport(householdId, "photo");
+
+        // Haiku first; escalate the same image(s) once to Sonnet when Haiku's
+        // JSON won't parse, it self-reports low confidence, or the draft fails
+        // structural validation.
+        let servedBy = AI_MODEL;
+        let result;
+        try {
+            result = await extractFromImages(images, AI_MODEL);
+        } catch (err) {
+            console.error("[photo] Haiku call failed:", err.message);
+            result = { data: null, ok: false };
+        }
+
+        const needsEscalation =
+            !result.ok ||
+            result.data?.confidence === "low" ||
+            !validateDraft(result.data);
+        if (needsEscalation) {
+            try {
+                const escalated = await extractFromImages(images, VISION_ESCALATION_MODEL);
+                if (escalated.ok) {
+                    result = escalated;
+                    servedBy = VISION_ESCALATION_MODEL;
+                }
+            } catch (err) {
+                console.error("[photo] Sonnet escalation failed:", err.message);
+            }
+        }
+
+        const data = result.data;
+        if (!result.ok || !data || !data.title) {
+            return res.status(400).json({
+                error: "No recipe could be read from that photo.",
+            });
+        }
+        console.log(
+            `[photo] served by ${servedBy} (confidence=${data.confidence ?? "?"})`,
+        );
+
+        const nutrition = mapNutrition({
+            calories: data.calories,
+            proteinContent: data.protein_g,
+            carbohydrateContent: data.carb_g,
+            fatContent: data.fat_g,
+        });
+
+        res.json({
+            title: data.title,
+            description: data.description || null,
+            instructions:
+                typeof data.instructions === "string"
+                    ? data.instructions
+                    : flattenInstructions(data.instructions).join("\n"),
+            link_url: null,
+            prep_time_minutes: firstInt(data.prep_time_minutes),
+            cook_time_minutes: firstInt(data.cook_time_minutes),
+            ingredients: mapIngredients(
+                Array.isArray(data.ingredients)
+                    ? data.ingredients.map((i) => (typeof i === "string" ? i : i?.name))
+                    : [],
+            ),
+            collections: ["Scanned"],
+            image_url: null,
+            image_public_id: null,
+            servings: firstInt(data.servings),
+            calories: nutrition.calories,
+            protein_g: nutrition.protein_g,
+            carb_g: nutrition.carb_g,
+            fat_g: nutrition.fat_g,
+            macros_source: nutrition.found ? "estimated" : null,
+        });
+    } catch (error) {
+        next(error);
+    }
+}
+
+module.exports = { importRecipe, estimateMacros, generateFromTitle, parseFromPhoto };

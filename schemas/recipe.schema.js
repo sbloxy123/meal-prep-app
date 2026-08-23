@@ -42,6 +42,20 @@ const estimateMacrosSchema = z.object({
     ),
 });
 
+// POST /recipes/parse-from-photo — 1–4 base64-encoded photos of a recipe.
+// Images are read by Claude vision and discarded; nothing is persisted.
+const parsePhotoSchema = z.object({
+    images: z
+        .array(
+            z.object({
+                media_type: z.enum(["image/jpeg", "image/png", "image/webp"]),
+                data: z.string().min(1),
+            }),
+        )
+        .min(1)
+        .max(4),
+});
+
 const recipeShoppingListSchema = z.object({
     ingredients: z.array(z.string().optional()),
     recipeId: z.coerce.number().optional(),
@@ -64,6 +78,7 @@ module.exports = {
     recipeSchema,
     importUrlSchema,
     estimateMacrosSchema,
+    parsePhotoSchema,
     recipeShoppingListSchema,
     customProductSchema,
     recipeIngredientSchema,

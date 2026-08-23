@@ -26,6 +26,12 @@ app.use((req, res, next) => {
     next();
 });
 
+// Photo → recipe sends base64 image data, which exceeds the default ~100kb JSON
+// limit. Parse this one route with a larger cap before the global parser below
+// (the global express.json() would otherwise 413 the body first). Once parsed,
+// the second express.json() is a no-op for this request.
+app.use("/recipes/parse-from-photo", express.json({ limit: "12mb" }));
+
 app.use(express.json());
 
 const recipesRouter = require("./routes/recipesRouter");
