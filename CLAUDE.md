@@ -32,6 +32,11 @@ PASSWORD=
 DATABASE_PORT=
 ANTHROPIC_API_KEY=
 
+# Optional — used by POST /recipes/import-social for the YouTube path (Data API,
+# reads video title + description). If unset, YouTube falls back to og:description
+# scraping (truncated) and Instagram/TikTok rely on the "paste the caption" flow.
+YOUTUBE_API_KEY=
+
 # Assembled connection string — required by node-pg-migrate and used on Railway
 # (Railway Postgres internal host: postgres.railway.internal)
 DATABASE_URL=postgresql://user:password@host:port/database

@@ -9,6 +9,7 @@ const {
     importUrlSchema,
     estimateMacrosSchema,
     improveRecipeSchema,
+    importSocialSchema,
     parsePhotoSchema,
 } = require("../schemas/recipe.schema.js");
 
@@ -27,6 +28,10 @@ const IMPORT_LIMIT = 20;
 const GENERATE_LIMIT = 15;
 const PHOTO_LIMIT = 15;
 const IMPROVE_LIMIT = 15;
+const SOCIAL_LIMIT = 20;
+// A fetched caption shorter than this is treated as "blocked/too sparse" (a login
+// wall or a bare title) → we ask the user to paste the caption instead.
+const MIN_CAPTION_LEN = 40;
 // Defense-in-depth cap on decoded image bytes (base64 ~4/3 the raw size); the
 // route body parser (app.js) caps the payload itself.
 const MAX_TOTAL_IMAGE_BYTES = 12 * 1024 * 1024; // 12 MB
@@ -282,9 +287,11 @@ function stripFences(text) {
     return text.replace(/^```json\n?/, "").replace(/\n?```$/, "").trim();
 }
 
-async function extractWithAI($) {
-    const text = pageToText($);
-    if (!text) return null;
+// AI extraction from a plain block of text — the readable text of a web page, or
+// a social-media post caption/description. Returns the same `fields` shape the
+// scrapers produce (so buildDraft can consume it), or null if it isn't a recipe.
+async function extractRecipeFromText(text) {
+    if (!text || !text.trim()) return null;
 
     const message = await client.messages.create({
         model: AI_MODEL,
@@ -292,7 +299,7 @@ async function extractWithAI($) {
         messages: [
             {
                 role: "user",
-                content: `You extract structured recipe data from the readable text of a web page.
+                content: `You extract structured recipe data from a block of text — the readable text of a web page, or a social-media post caption (Instagram / TikTok / YouTube), which may include emoji, hashtags and chit-chat around the recipe.
 Return ONLY valid raw JSON (no markdown, no code fences) in EXACTLY this shape:
 {
   "title": string,
@@ -307,9 +314,9 @@ Return ONLY valid raw JSON (no markdown, no code fences) in EXACTLY this shape:
   "carb_g": number | null,             // per serving, grams
   "fat_g": number | null               // per serving, grams
 }
-Each ingredient "name" is the full line (e.g. "500g beef mince"); leave quantity and unit as empty strings.
+Each ingredient "name" is the full line (e.g. "500g beef mince"); leave quantity and unit as empty strings. Ignore hashtags, @mentions, follow/like requests and other non-recipe chatter.
 If the text is not a recipe, return {"title": null}.
-Page text:
+Source text:
 ${text}`,
             },
         ],
@@ -349,6 +356,11 @@ ${text}`,
         nutrition,
         recipeYield: data.servings,
     };
+}
+
+// Tier-3 web-page fallback: run the text extractor over the page's visible text.
+async function extractWithAI($) {
+    return extractRecipeFromText(pageToText($));
 }
 
 // ---------- fetching (SSRF-guarded, timeout, size cap, redirects) ----------
@@ -954,4 +966,156 @@ async function parseFromPhoto(req, res, next) {
     }
 }
 
-module.exports = { importRecipe, estimateMacros, improveRecipe, generateFromTitle, parseFromPhoto };
+// ---------- social import (caption-first + paste fallback) ----------
+
+// Pull a YouTube video id from the common URL shapes.
+function youtubeVideoId(url) {
+    try {
+        const u = new URL(url);
+        const host = u.hostname.replace(/^www\./, "").toLowerCase();
+        if (host === "youtu.be") return u.pathname.slice(1).split("/")[0] || null;
+        if (host.endsWith("youtube.com")) {
+            if (u.pathname === "/watch") return u.searchParams.get("v");
+            const m = u.pathname.match(/^\/(shorts|embed|v)\/([^/?]+)/);
+            if (m) return m[2];
+        }
+    } catch {
+        /* not a URL */
+    }
+    return null;
+}
+
+// YouTube Data API snippet (title + full description). Needs YOUTUBE_API_KEY;
+// returns null if unset or the call fails (caller falls back to og-tags).
+async function fetchYouTubeSnippet(id) {
+    if (!process.env.YOUTUBE_API_KEY) return null;
+    const api = `https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${encodeURIComponent(
+        id,
+    )}&key=${process.env.YOUTUBE_API_KEY}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    try {
+        const r = await fetch(api, { signal: controller.signal });
+        if (!r.ok) return null;
+        const data = await r.json();
+        const snip = data?.items?.[0]?.snippet;
+        if (!snip) return null;
+        return { title: snip.title || "", description: snip.description || "" };
+    } catch {
+        return null;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+// Best-effort caption from Open Graph / meta tags on the page. Works for many
+// public posts; IG/TikTok often serve a login wall (→ short/empty → null).
+async function fetchOgCaption(url) {
+    let html;
+    try {
+        html = await fetchPage(url);
+    } catch {
+        return null;
+    }
+    const $ = cheerio.load(html);
+    const title =
+        $('meta[property="og:title"]').attr("content") || $("title").text() || "";
+    const desc =
+        $('meta[property="og:description"]').attr("content") ||
+        $('meta[name="description"]').attr("content") ||
+        "";
+    const caption = [title, desc].map((s) => s.trim()).filter(Boolean).join("\n\n").trim();
+    return caption.length >= MIN_CAPTION_LEN ? caption : null;
+}
+
+// Resolve a post URL to its caption text, or null if we can't get enough.
+async function getSocialCaption(url) {
+    let host = "";
+    try {
+        host = new URL(url).hostname.replace(/^www\./, "").toLowerCase();
+    } catch {
+        return null;
+    }
+    if (host === "youtu.be" || host.endsWith("youtube.com")) {
+        const id = youtubeVideoId(url);
+        if (id) {
+            const snip = await fetchYouTubeSnippet(id);
+            if (snip) {
+                const combined = [snip.title, snip.description]
+                    .filter(Boolean)
+                    .join("\n\n")
+                    .trim();
+                if (combined.length >= MIN_CAPTION_LEN) return combined;
+            }
+        }
+    }
+    // Instagram / TikTok / YouTube-without-key / anything else → og-tags.
+    return fetchOgCaption(url);
+}
+
+async function importSocial(req, res, next) {
+    try {
+        const parsed = importSocialSchema.safeParse(req.body);
+        if (!parsed.success) {
+            return res.status(400).json({ error: "A URL or caption text is required" });
+        }
+        const { url, text } = parsed.data;
+        const pasted = text && text.trim() ? text.trim() : null;
+
+        // Get the caption: use pasted text if given, else try to fetch it.
+        let caption = pasted;
+        if (!caption && url) {
+            try {
+                await assertSafeUrl(url);
+            } catch (guardError) {
+                return res.status(400).json({ error: guardError.message });
+            }
+            caption = await getSocialCaption(url);
+            // Blocked / too sparse — ask for a paste. No AI call, no slot spent.
+            if (!caption) return res.json({ needsCaption: true });
+        }
+        if (!caption) {
+            return res.status(400).json({ error: "A URL or caption text is required" });
+        }
+
+        // Rate-limit only now that we're actually going to call the model.
+        const householdId = req.householdId;
+        const recent = await db.countRecentImports(householdId, "social");
+        if (recent >= SOCIAL_LIMIT) {
+            return res.status(429).json({
+                error: "Import limit reached — 20 per 6 hours. Try again later.",
+            });
+        }
+        await db.recordImport(householdId, "social");
+
+        let fields;
+        try {
+            fields = await extractRecipeFromText(caption);
+        } catch (aiError) {
+            console.error("[social] extraction failed:", aiError.message);
+            return res.status(400).json({ error: "Couldn’t read a recipe from that." });
+        }
+
+        if (!fields || (!fields.title && (fields.ingredients || []).length === 0)) {
+            // A fetched caption may simply be too thin — offer the paste path.
+            if (url && !pasted) return res.json({ needsCaption: true });
+            return res.status(400).json({ error: "Couldn’t find a recipe in that caption." });
+        }
+
+        const draft = buildDraft(fields, url || null);
+        draft.collections = ["Social"];
+        delete draft._imageUrl; // don't trust/serve a scraped social image
+        res.json(draft);
+    } catch (error) {
+        next(error);
+    }
+}
+
+module.exports = {
+    importRecipe,
+    estimateMacros,
+    improveRecipe,
+    generateFromTitle,
+    parseFromPhoto,
+    importSocial,
+};
