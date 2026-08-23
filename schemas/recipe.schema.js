@@ -59,6 +59,17 @@ const improveRecipeSchema = z.object({
     ),
 });
 
+// POST /recipes/import-social — a social post URL (Instagram/TikTok/YouTube) or
+// a pasted caption. At least one must be present.
+const importSocialSchema = z
+    .object({
+        url: z.string().url().optional(),
+        text: z.string().optional(),
+    })
+    .refine((d) => (d.url && d.url.trim()) || (d.text && d.text.trim()), {
+        message: "A URL or caption text is required",
+    });
+
 // POST /recipes/parse-from-photo — 1–4 base64-encoded photos of a recipe.
 // Images are read by Claude vision and discarded; nothing is persisted.
 const parsePhotoSchema = z.object({
@@ -96,6 +107,7 @@ module.exports = {
     importUrlSchema,
     estimateMacrosSchema,
     improveRecipeSchema,
+    importSocialSchema,
     parsePhotoSchema,
     recipeShoppingListSchema,
     customProductSchema,
