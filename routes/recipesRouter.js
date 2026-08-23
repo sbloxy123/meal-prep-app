@@ -13,6 +13,7 @@ recipesRouter.post("/", recipesController.createRecipe);
 recipesRouter.post("/import", recipeImportController.importRecipe);
 recipesRouter.post("/generate-from-title", recipeImportController.generateFromTitle);
 recipesRouter.post("/estimate-macros", recipeImportController.estimateMacros);
+recipesRouter.post("/improve", recipeImportController.improveRecipe);
 // Base64 photos of a recipe → draft. The larger body limit is set in app.js
 // (before the global JSON parser); this route only reads the parsed body.
 recipesRouter.post("/parse-from-photo", recipeImportController.parseFromPhoto);

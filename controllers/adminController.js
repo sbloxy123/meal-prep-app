@@ -74,11 +74,11 @@ async function overview(req, res, next) {
 
         const t = totalsRes.rows[0];
 
-        const ai = { import: 0, estimate: 0, generate: 0, photo: 0 };
+        const ai = { import: 0, estimate: 0, generate: 0, photo: 0, improve: 0 };
         for (const r of aiRes.rows) {
             if (r.action in ai) ai[r.action] = Number(r.n);
         }
-        ai.total = ai.import + ai.estimate + ai.generate + ai.photo;
+        ai.total = ai.import + ai.estimate + ai.generate + ai.photo + ai.improve;
 
         const macrosSource = {};
         for (const r of macrosRes.rows) macrosSource[r.macros_source] = Number(r.n);
@@ -108,7 +108,8 @@ async function overview(req, res, next) {
                         COUNT(*) FILTER (WHERE ri.action = 'import')::int   AS import,
                         COUNT(*) FILTER (WHERE ri.action = 'estimate')::int AS estimate,
                         COUNT(*) FILTER (WHERE ri.action = 'generate')::int AS generate,
-                        COUNT(*) FILTER (WHERE ri.action = 'photo')::int    AS photo
+                        COUNT(*) FILTER (WHERE ri.action = 'photo')::int    AS photo,
+                        COUNT(*) FILTER (WHERE ri.action = 'improve')::int  AS improve
                      FROM days d LEFT JOIN recipe_imports ri ON ri.created_at::date = d.d
                      GROUP BY d.d ORDER BY d.d`,
                     [days],
@@ -142,6 +143,7 @@ async function overview(req, res, next) {
                 estimate: Number(r.estimate),
                 generate: Number(r.generate),
                 photo: Number(r.photo),
+                improve: Number(r.improve),
             },
         }));
 
@@ -190,6 +192,7 @@ async function users(req, res, next) {
                 COALESCE(ai.estimate_count, 0) AS ai_estimate,
                 COALESCE(ai.generate_count, 0) AS ai_generate,
                 COALESCE(ai.photo_count, 0)    AS ai_photo,
+                COALESCE(ai.improve_count, 0)  AS ai_improve,
                 COALESCE(sh.shares_created, 0) AS shares_created,
                 COALESCE(ev.week_adds, 0)      AS week_adds,
                 COALESCE(ev.lists_generated, 0) AS lists_generated
@@ -213,7 +216,8 @@ async function users(req, res, next) {
                     COUNT(*) FILTER (WHERE action = 'import')   AS import_count,
                     COUNT(*) FILTER (WHERE action = 'estimate') AS estimate_count,
                     COUNT(*) FILTER (WHERE action = 'generate') AS generate_count,
-                    COUNT(*) FILTER (WHERE action = 'photo')    AS photo_count
+                    COUNT(*) FILTER (WHERE action = 'photo')    AS photo_count,
+                    COUNT(*) FILTER (WHERE action = 'improve')  AS improve_count
                 FROM recipe_imports ri WHERE ri.household_id = hm.household_id
             ) ai ON true
             LEFT JOIN LATERAL (
@@ -246,11 +250,13 @@ async function users(req, res, next) {
                     estimate: Number(r.ai_estimate),
                     generate: Number(r.ai_generate),
                     photo: Number(r.ai_photo),
+                    improve: Number(r.ai_improve),
                     total:
                         Number(r.ai_import) +
                         Number(r.ai_estimate) +
                         Number(r.ai_generate) +
-                        Number(r.ai_photo),
+                        Number(r.ai_photo) +
+                        Number(r.ai_improve),
                 },
                 shares_created: Number(r.shares_created),
                 week_adds: Number(r.week_adds),
