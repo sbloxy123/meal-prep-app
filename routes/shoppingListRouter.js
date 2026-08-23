@@ -11,6 +11,7 @@ shoppingListRouter.post(
     "/custom-product",
     shoppingListController.createCustomProduct,
 );
+shoppingListRouter.post("/finish", shoppingListController.finishShop);
 shoppingListRouter.post(
     "/organise",
     shoppingListController.organiseShoppingList,

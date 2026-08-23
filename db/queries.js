@@ -1,13 +1,68 @@
 const pool = require("./pool");
 
-async function getAllRecipes() {
-    const { rows } = await pool.query("SELECT * FROM recipes ORDER BY id");
+// ========= HOUSEHOLD RESOLUTION ========= //
+// Data is scoped by household, not by user. requireAuth resolves the caller's
+// household id once per request and passes it to the queries below.
+
+async function getHouseholdIdForUser(userId) {
+    const { rows } = await pool.query(
+        "SELECT household_id FROM household_member WHERE user_id = $1 LIMIT 1",
+        [userId],
+    );
+    return rows[0]?.household_id ?? null;
+}
+
+// Resolve the user's household, creating one (with them as owner) on first use.
+// New users have no household until their first authenticated request.
+async function ensureHouseholdForUser(userId, displayName) {
+    const existing = await getHouseholdIdForUser(userId);
+    if (existing) return existing;
+
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+        const { rows } = await client.query(
+            "INSERT INTO household (name) VALUES ($1) RETURNING id",
+            [displayName ? `${displayName}'s kitchen` : null],
+        );
+        const householdId = rows[0].id;
+        const member = await client.query(
+            `INSERT INTO household_member (household_id, user_id, role)
+             VALUES ($1, $2, 'owner')
+             ON CONFLICT (user_id) DO NOTHING`,
+            [householdId, userId],
+        );
+        // If the membership insert was a no-op, a concurrent request already
+        // created this user's household — roll back so we don't orphan the row.
+        if (member.rowCount === 0) {
+            await client.query("ROLLBACK");
+        } else {
+            await client.query("COMMIT");
+        }
+    } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+    } finally {
+        client.release();
+    }
+    return await getHouseholdIdForUser(userId);
+}
+
+// ========= RECIPES ========= //
+
+async function getAllRecipes(householdId) {
+    const { rows } = await pool.query(
+        `SELECT recipes.*, cu.name AS created_by_name
+         FROM recipes
+         LEFT JOIN "user" cu ON cu.id = recipes.user_id
+         WHERE recipes.household_id = $1
+         ORDER BY recipes.id`,
+        [householdId],
+    );
     return rows;
 }
 
 async function createSingleTag(tagTitle) {
-    // console.log("running createSingleTag for: ", tagTitle);
-
     const { rows } = await pool.query("SELECT * FROM tags WHERE name = $1", [
         tagTitle,
     ]);
@@ -37,7 +92,7 @@ async function createSingleIngredient(ingredient) {
     return rows[0].id;
 }
 
-async function createRecipe(data) {
+async function createRecipe(data, householdId, userId) {
     const {
         recipe_title,
         recipe_description,
@@ -49,6 +104,14 @@ async function createRecipe(data) {
         ingredient_quantity,
         ingredient_unit,
         tags,
+        image_url,
+        image_public_id,
+        servings,
+        calories,
+        protein_g,
+        carb_g,
+        fat_g,
+        macros_source,
     } = data;
 
     const ingredientIds = await Promise.all(
@@ -61,7 +124,7 @@ async function createRecipe(data) {
 
     try {
         const { rows } = await pool.query(
-            "INSERT INTO recipes (title, description, instructions, link_url, prep_time_minutes, cook_time_minutes) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+            "INSERT INTO recipes (title, description, instructions, link_url, prep_time_minutes, cook_time_minutes, image_url, image_public_id, servings, calories, protein_g, carb_g, fat_g, macros_source, household_id, user_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING id",
             [
                 recipe_title,
                 recipe_description,
@@ -69,6 +132,16 @@ async function createRecipe(data) {
                 recipe_link_url,
                 prep_time_minutes,
                 cook_time_minutes,
+                image_url ?? null,
+                image_public_id ?? null,
+                servings ?? null,
+                calories ?? null,
+                protein_g ?? null,
+                carb_g ?? null,
+                fat_g ?? null,
+                macros_source ?? null,
+                householdId,
+                userId,
             ],
         );
         const recipeId = rows[0].id;
@@ -90,20 +163,24 @@ async function createRecipe(data) {
                 [tagIds[i], recipeId],
             );
         }
-        return;
+        return recipeId;
     } catch (error) {
         console.error(error);
     }
 }
 
-async function deleteRecipe(recipeId) {
-    await pool.query("DELETE FROM recipes WHERE id = $1", [recipeId]);
+async function deleteRecipe(recipeId, householdId) {
+    await pool.query("DELETE FROM recipes WHERE id = $1 AND household_id = $2", [
+        recipeId,
+        householdId,
+    ]);
 }
 
-async function findOneRecipe(recipeId) {
-    const { rows } = await pool.query("SELECT * FROM recipes WHERE id = $1", [
-        recipeId,
-    ]);
+async function findOneRecipe(recipeId, householdId) {
+    const { rows } = await pool.query(
+        "SELECT * FROM recipes WHERE id = $1 AND household_id = $2",
+        [recipeId, householdId],
+    );
     return rows[0];
 }
 
@@ -114,26 +191,47 @@ async function getRecipeIngredients(recipeId) {
     );
     return rows;
 }
-async function getAllTags() {
-    const { rows } = await pool.query("SELECT * FROM tags");
-    return rows;
-}
-async function getSingleRecipeTags() {
+
+// Collections available to a household = the distinct tags used by its recipes.
+// Previously this returned every tag in the system (a cross-household leak).
+async function getAllTags(householdId) {
     const { rows } = await pool.query(
-        "SELECT recipes.title AS tag_recipe_title, tags.name FROM recipe_tags INNER JOIN recipes ON recipes.id = recipe_tags.recipe_id INNER JOIN tags ON tags.id = recipe_tags.tag_id;",
-    );
-    return rows;
-}
-async function getSingleRecipeIngredients() {
-    const { rows } = await pool.query(
-        "SELECT title AS recipe_title, ingredients.name AS ingredient, ingredients.id AS ingredient_id, recipe_ingredients.quantity, recipe_ingredients.unit FROM recipe_ingredients INNER JOIN recipes ON recipes.id = recipe_ingredients.recipe_id INNER JOIN ingredients ON ingredients.id = recipe_ingredients.ingredient_id;",
+        `SELECT DISTINCT tags.id, tags.name
+         FROM tags
+         INNER JOIN recipe_tags ON recipe_tags.tag_id = tags.id
+         INNER JOIN recipes ON recipes.id = recipe_tags.recipe_id
+         WHERE recipes.household_id = $1
+         ORDER BY tags.name;`,
+        [householdId],
     );
     return rows;
 }
 
-async function updateRecipe(data, recipeId) {
-    console.log("updating recipe .....");
+async function getSingleRecipeTags(householdId) {
+    const { rows } = await pool.query(
+        `SELECT recipes.title AS tag_recipe_title, tags.name
+         FROM recipe_tags
+         INNER JOIN recipes ON recipes.id = recipe_tags.recipe_id
+         INNER JOIN tags ON tags.id = recipe_tags.tag_id
+         WHERE recipes.household_id = $1;`,
+        [householdId],
+    );
+    return rows;
+}
 
+async function getSingleRecipeIngredients(householdId) {
+    const { rows } = await pool.query(
+        `SELECT title AS recipe_title, ingredients.name AS ingredient, ingredients.id AS ingredient_id, recipe_ingredients.quantity, recipe_ingredients.unit
+         FROM recipe_ingredients
+         INNER JOIN recipes ON recipes.id = recipe_ingredients.recipe_id
+         INNER JOIN ingredients ON ingredients.id = recipe_ingredients.ingredient_id
+         WHERE recipes.household_id = $1;`,
+        [householdId],
+    );
+    return rows;
+}
+
+async function updateRecipe(data, recipeId, householdId) {
     try {
         const {
             recipe_title,
@@ -146,13 +244,24 @@ async function updateRecipe(data, recipeId) {
             ingredient_quantity,
             ingredient_unit,
             tags,
+            image_url,
+            image_public_id,
+            servings,
+            calories,
+            protein_g,
+            carb_g,
+            fat_g,
+            macros_source,
         } = data;
 
         await pool.query(
-            `UPDATE recipes 
-     SET title = $1, description = $2, instructions = $3, 
-         link_url = $4, prep_time_minutes = $5, cook_time_minutes = $6
-     WHERE id = $7`,
+            `UPDATE recipes
+             SET title = $1, description = $2, instructions = $3,
+                 link_url = $4, prep_time_minutes = $5, cook_time_minutes = $6,
+                 image_url = $7, image_public_id = $8,
+                 servings = $9, calories = $10, protein_g = $11,
+                 carb_g = $12, fat_g = $13, macros_source = $14
+             WHERE id = $15 AND household_id = $16`,
             [
                 recipe_title,
                 recipe_description,
@@ -160,7 +269,16 @@ async function updateRecipe(data, recipeId) {
                 recipe_link_url,
                 prep_time_minutes,
                 cook_time_minutes,
+                image_url ?? null,
+                image_public_id ?? null,
+                servings ?? null,
+                calories ?? null,
+                protein_g ?? null,
+                carb_g ?? null,
+                fat_g ?? null,
+                macros_source ?? null,
                 recipeId,
+                householdId,
             ],
         );
         await pool.query(
@@ -215,23 +333,27 @@ async function getRecipeTags(recipeId) {
 
 // ========= SHOPPING LIST & MENU QUERIES ========= //
 
-async function getShoppingListIngredientsByRecipe() {
+async function getShoppingListIngredientsByRecipe(householdId) {
     const { rows } = await pool.query(
-        "SELECT shopping_list_recipes.recipe_id, shopping_list.ingredient_name FROM shopping_list INNER JOIN shopping_list_recipes ON shopping_list.id = shopping_list_recipes.shopping_list_id WHERE shopping_list.ingredient_name IS NOT NULL",
+        `SELECT shopping_list_recipes.recipe_id, shopping_list.ingredient_name
+         FROM shopping_list
+         INNER JOIN shopping_list_recipes ON shopping_list.id = shopping_list_recipes.shopping_list_id
+         WHERE shopping_list.ingredient_name IS NOT NULL AND shopping_list.household_id = $1`,
+        [householdId],
     );
     return rows;
 }
 
-async function createSingleRecipeShoppingListItem(ingredientName, recipeId) {
+async function createSingleRecipeShoppingListItem(ingredientName, recipeId, householdId) {
     const { rows } = await pool.query(
-        "SELECT * FROM shopping_list WHERE ingredient_name = $1",
-        [ingredientName],
+        "SELECT * FROM shopping_list WHERE ingredient_name = $1 AND household_id = $2",
+        [ingredientName, householdId],
     );
 
     if (rows.length < 1) {
         const ingredient = await pool.query(
-            "INSERT INTO shopping_list (custom_product, ingredient_name) VALUES (null, $1) RETURNING id;",
-            [ingredientName],
+            "INSERT INTO shopping_list (custom_product, ingredient_name, household_id) VALUES (null, $1, $2) RETURNING id;",
+            [ingredientName, householdId],
         );
         await pool.query(
             "INSERT INTO shopping_list_recipes (shopping_list_id, recipe_id) VALUES ($1, $2)",
@@ -245,85 +367,103 @@ async function createSingleRecipeShoppingListItem(ingredientName, recipeId) {
     }
 }
 
-async function allRecipesOnMenu() {
+async function allRecipesOnMenu(householdId) {
     const { rows } = await pool.query(
-        "SELECT * FROM recipes WHERE is_on_menu = true",
+        `SELECT recipes.*, au.name AS added_by_name
+         FROM recipes
+         LEFT JOIN "user" au ON au.id = recipes.added_to_menu_by
+         WHERE recipes.is_on_menu = true AND recipes.household_id = $1`,
+        [householdId],
     );
     return rows;
 }
 
-async function addRecipeToMenu(recipeId) {
+async function addRecipeToMenu(recipeId, householdId, userId) {
     await pool.query(
-        "UPDATE recipes SET is_on_menu = true WHERE recipes.id = $1;",
-        [recipeId],
+        "UPDATE recipes SET is_on_menu = true, added_to_menu_by = $3 WHERE recipes.id = $1 AND household_id = $2;",
+        [recipeId, householdId, userId],
     );
 }
 
-async function createShoppingList(recipeIngredientNames) {
-    await Promise.all(
-        recipeIngredientNames.ingredients.map((ingredientName) =>
+async function createShoppingList(recipeIngredientNames, householdId, userId) {
+    await Promise.all([
+        ...recipeIngredientNames.ingredients.map((ingredientName) =>
             createSingleRecipeShoppingListItem(
                 ingredientName,
                 recipeIngredientNames.recipeId,
+                householdId,
             ),
         ),
-        addRecipeToMenu(recipeIngredientNames.recipeId),
-    );
+        addRecipeToMenu(recipeIngredientNames.recipeId, householdId, userId),
+    ]);
 }
 
-async function getShoppingListItems() {
+async function getShoppingListItems(householdId) {
     const { rows } = await pool.query(
-        "SELECT shopping_list.*, COUNT(shopping_list_recipes.id) AS recipe_count FROM shopping_list LEFT JOIN shopping_list_recipes ON shopping_list.id = shopping_list_recipes.shopping_list_id GROUP BY shopping_list.id ORDER BY shopping_list.id;",
+        `SELECT shopping_list.*, COUNT(shopping_list_recipes.id) AS recipe_count
+         FROM shopping_list
+         LEFT JOIN shopping_list_recipes ON shopping_list.id = shopping_list_recipes.shopping_list_id
+         WHERE shopping_list.household_id = $1
+         GROUP BY shopping_list.id
+         ORDER BY shopping_list.id;`,
+        [householdId],
     );
     return rows;
 }
 
-async function deleteShoppingList() {
-    await pool.query("DELETE FROM shopping_list");
+async function deleteShoppingList(householdId) {
+    await pool.query("DELETE FROM shopping_list WHERE household_id = $1", [householdId]);
 }
 
-async function removeIsOnMenuRecipes() {
-    await pool.query("UPDATE recipes SET is_on_menu = false");
+async function removeIsOnMenuRecipes(householdId) {
+    await pool.query("UPDATE recipes SET is_on_menu = false, added_to_menu_by = NULL WHERE household_id = $1", [householdId]);
 }
-async function createCustomProduct(customProduct) {
+
+async function clearGeneratedShoppingList(householdId) {
+    await pool.query("DELETE FROM generated_shopping_list WHERE household_id = $1", [householdId]);
+}
+
+async function createCustomProduct(customProduct, householdId) {
     const { rows } = await pool.query(
-        "SELECT * FROM shopping_list WHERE custom_product = $1",
-        [customProduct],
+        "SELECT * FROM shopping_list WHERE custom_product = $1 AND household_id = $2",
+        [customProduct, householdId],
     );
 
     if (rows.length < 1) {
         await pool.query(
-            "INSERT INTO shopping_list (custom_product, ingredient_name) VALUES ($1, null);",
-            [customProduct],
+            "INSERT INTO shopping_list (custom_product, ingredient_name, household_id) VALUES ($1, null, $2);",
+            [customProduct, householdId],
         );
     }
 }
 
-async function getCustomProductByName(customProduct) {
+async function getCustomProductByName(customProduct, householdId) {
     const { rows } = await pool.query(
-        "SELECT * FROM shopping_list WHERE custom_product = $1",
-        [customProduct],
+        "SELECT * FROM shopping_list WHERE custom_product = $1 AND household_id = $2",
+        [customProduct, householdId],
     );
     return rows[0] || null;
 }
 
-async function updateIngredient(shoppingItemId, newShoppingItemTitle) {
+async function updateIngredient(shoppingItemId, newShoppingItemTitle, householdId) {
     await pool.query(
-        "UPDATE shopping_list SET ingredient_name = $1 WHERE id = $2",
-        [newShoppingItemTitle, shoppingItemId],
-    );
-}
-async function updateCustomProduct(customProductId, customProduct) {
-    await pool.query(
-        "UPDATE shopping_list SET custom_product = $1 WHERE id = $2",
-        [customProduct, customProductId],
+        "UPDATE shopping_list SET ingredient_name = $1 WHERE id = $2 AND household_id = $3",
+        [newShoppingItemTitle, shoppingItemId, householdId],
     );
 }
 
-async function removeSingleShoppingListItem(shoppingListItemId) {
-    await pool.query("DELETE FROM shopping_list WHERE id = $1", [
-        shoppingListItemId,
-    ]);
+async function updateCustomProduct(customProductId, customProduct, householdId) {
+    await pool.query(
+        "UPDATE shopping_list SET custom_product = $1 WHERE id = $2 AND household_id = $3",
+        [customProduct, customProductId, householdId],
+    );
+}
+
+async function removeSingleShoppingListItem(shoppingListItemId, householdId) {
+    await pool.query(
+        "DELETE FROM shopping_list WHERE id = $1 AND household_id = $2",
+        [shoppingListItemId, householdId],
+    );
 }
 
 async function checkForDuplicateIngredients(recipeIngredient) {
@@ -334,11 +474,11 @@ async function checkForDuplicateIngredients(recipeIngredient) {
     return parseInt(ingredientCount.rows[0].count);
 }
 
-async function removeRecipeFromShoppingList(recipeId) {
+async function removeRecipeFromShoppingList(recipeId, householdId) {
     try {
         await pool.query(
-            "UPDATE recipes SET is_on_menu = false WHERE id = $1 ",
-            [recipeId],
+            "UPDATE recipes SET is_on_menu = false, added_to_menu_by = NULL WHERE id = $1 AND household_id = $2",
+            [recipeId, householdId],
         );
 
         const { rows: recipesShoppingListItemIdsRows } = await pool.query(
@@ -350,7 +490,10 @@ async function removeRecipeFromShoppingList(recipeId) {
                 row.shopping_list_id,
             );
             if (ingredientCount < 2) {
-                await removeSingleShoppingListItem(row.shopping_list_id);
+                await pool.query(
+                    "DELETE FROM shopping_list WHERE id = $1 AND household_id = $2",
+                    [row.shopping_list_id, householdId],
+                );
             }
         }
 
@@ -364,25 +507,46 @@ async function removeRecipeFromShoppingList(recipeId) {
     }
 }
 
-async function addSingleItemToGeneratedList(product) {
+async function addSingleItemToGeneratedList(product, householdId) {
     await pool.query(
-        "INSERT INTO generated_shopping_list (product_name, aisle_name, recipe_count, is_custom_product, quantity) VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO generated_shopping_list (product_name, aisle_name, recipe_count, is_custom_product, quantity, household_id) VALUES ($1, $2, $3, $4, $5, $6)",
         [
             product.product,
             product.aisle,
             product.recipe_count,
             product.is_custom_product,
             product.quantity,
+            householdId,
         ],
     );
 }
 
-async function createShoppingListByAisles(generatedShoppingItems) {
+// §8.2a — append a single "forgot something" item to the generated list
+// without regenerating. Dropped in an "Other" aisle. The households migration
+// drops the global unique(product_name), so ON CONFLICT no longer applies —
+// guard against a duplicate within this household with WHERE NOT EXISTS.
+async function addForgottenItemToGeneratedList(productName, householdId) {
+    await pool.query(
+        `INSERT INTO generated_shopping_list
+             (product_name, aisle_name, recipe_count, is_custom_product, quantity, household_id)
+         SELECT $1, 'Other', '0', true, '1', $2
+         WHERE NOT EXISTS (
+             SELECT 1 FROM generated_shopping_list
+             WHERE product_name = $1 AND household_id = $2
+         )`,
+        [productName, householdId],
+    );
+}
+
+async function createShoppingListByAisles(generatedShoppingItems, householdId) {
     try {
-        await pool.query("DELETE FROM generated_shopping_list");
+        await pool.query(
+            "DELETE FROM generated_shopping_list WHERE household_id = $1",
+            [householdId],
+        );
         await Promise.all(
             generatedShoppingItems.items.map((product) =>
-                addSingleItemToGeneratedList(product),
+                addSingleItemToGeneratedList(product, householdId),
             ),
         );
     } catch (error) {
@@ -391,36 +555,349 @@ async function createShoppingListByAisles(generatedShoppingItems) {
     }
 }
 
-async function getGeneratedShoppingListItems() {
-    const { rows } = await pool.query("SELECT * FROM generated_shopping_list");
+async function getGeneratedShoppingListItems(householdId) {
+    const { rows } = await pool.query(
+        "SELECT * FROM generated_shopping_list WHERE household_id = $1",
+        [householdId],
+    );
     return rows;
 }
 
-async function toggleCollected(productId, status) {
+async function toggleCollected(productId, status, householdId) {
     await pool.query(
-        "UPDATE generated_shopping_list SET is_collected = $2 WHERE id = $1",
-        [productId, status],
+        "UPDATE generated_shopping_list SET is_collected = $2 WHERE id = $1 AND household_id = $3",
+        [productId, status, householdId],
     );
 }
 
-async function setRecipeFavorite(recipeId, favorite) {
-    await pool.query("UPDATE recipes SET favorite = $2 WHERE id = $1", [
-        recipeId,
-        favorite,
-    ]);
+async function setRecipeFavorite(recipeId, favorite, householdId) {
+    await pool.query(
+        "UPDATE recipes SET favorite = $2 WHERE id = $1 AND household_id = $3",
+        [recipeId, favorite, householdId],
+    );
 }
 
-async function deleteProductItemBoth(productId, productName) {
-    await pool.query("DELETE FROM generated_shopping_list WHERE id = $1", [
-        productId,
-    ]);
+async function deleteProductItemBoth(productId, productName, householdId) {
     await pool.query(
-        "DELETE FROM shopping_list WHERE LOWER(custom_product) = LOWER($1) OR LOWER(ingredient_name) = LOWER($1)",
-        [productName],
+        "DELETE FROM generated_shopping_list WHERE id = $1 AND household_id = $2",
+        [productId, householdId],
     );
+    await pool.query(
+        "DELETE FROM shopping_list WHERE (LOWER(custom_product) = LOWER($1) OR LOWER(ingredient_name) = LOWER($1)) AND household_id = $2",
+        [productName, householdId],
+    );
+}
+
+// ---- Household management (C2: invite / join / leave / remove) ----
+
+function withStatus(message, status) {
+    const err = new Error(message);
+    err.status = status;
+    return err;
+}
+
+async function getHouseholdById(householdId) {
+    const { rows } = await pool.query("SELECT id, name FROM household WHERE id = $1", [householdId]);
+    return rows[0];
+}
+
+async function getHouseholdMembers(householdId) {
+    const { rows } = await pool.query(
+        `SELECT hm.user_id, hm.role, hm.joined_at, u.name, u.email
+         FROM household_member hm
+         JOIN "user" u ON u.id = hm.user_id
+         WHERE hm.household_id = $1
+         ORDER BY hm.joined_at ASC`,
+        [householdId],
+    );
+    return rows;
+}
+
+async function getMemberRole(householdId, userId) {
+    const { rows } = await pool.query(
+        "SELECT role FROM household_member WHERE household_id = $1 AND user_id = $2",
+        [householdId, userId],
+    );
+    return rows[0]?.role ?? null;
+}
+
+async function getHouseholdMemberCount(householdId) {
+    const { rows } = await pool.query(
+        "SELECT COUNT(*)::int AS n FROM household_member WHERE household_id = $1",
+        [householdId],
+    );
+    return rows[0].n;
+}
+
+async function renameHousehold(householdId, name) {
+    await pool.query("UPDATE household SET name = $1 WHERE id = $2", [name, householdId]);
+}
+
+async function getPendingInvites(householdId) {
+    const { rows } = await pool.query(
+        `SELECT id, invited_email, created_at, expires_at
+         FROM household_invite
+         WHERE household_id = $1 AND accepted_at IS NULL AND expires_at > now()
+         ORDER BY created_at DESC`,
+        [householdId],
+    );
+    return rows;
+}
+
+async function createInvite(householdId, invitedEmail, invitedBy, token, expiresAt) {
+    // Replace any existing pending invite for the same email + household.
+    await pool.query(
+        `DELETE FROM household_invite
+         WHERE household_id = $1 AND lower(invited_email) = lower($2) AND accepted_at IS NULL`,
+        [householdId, invitedEmail],
+    );
+    const { rows } = await pool.query(
+        `INSERT INTO household_invite (household_id, invited_email, invited_by, token, expires_at)
+         VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+        [householdId, invitedEmail, invitedBy, token, expiresAt],
+    );
+    return rows[0].id;
+}
+
+async function revokeInvite(householdId, inviteId) {
+    await pool.query(
+        "DELETE FROM household_invite WHERE id = $1 AND household_id = $2",
+        [inviteId, householdId],
+    );
+}
+
+// Accept an invite (transactional). Moves the user into the invite's household.
+// If they were the sole member of their old (solo) household, their recipes and
+// lists are merged in and the empty household is removed; if they were in a
+// shared household, they just move across and the shared data stays behind.
+async function acceptInvite(userId, token) {
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+
+        const { rows: invRows } = await client.query(
+            `SELECT hi.*, h.name AS household_name
+             FROM household_invite hi JOIN household h ON h.id = hi.household_id
+             WHERE hi.token = $1 FOR UPDATE OF hi`,
+            [token],
+        );
+        const invite = invRows[0];
+        if (!invite) throw withStatus("This invite link isn't valid.", 404);
+        if (invite.accepted_at) throw withStatus("This invite has already been used.", 410);
+        if (new Date(invite.expires_at) < new Date()) throw withStatus("This invite has expired.", 410);
+
+        const target = invite.household_id;
+        const { rows: curRows } = await client.query(
+            "SELECT household_id FROM household_member WHERE user_id = $1",
+            [userId],
+        );
+        const current = curRows[0]?.household_id ?? null;
+
+        if (current !== target) {
+            let soleMember = false;
+            if (current) {
+                const { rows: cnt } = await client.query(
+                    "SELECT COUNT(*)::int AS n FROM household_member WHERE household_id = $1",
+                    [current],
+                );
+                soleMember = cnt[0].n === 1;
+            }
+
+            if (current && soleMember) {
+                // Merge the joiner's solo data into the target household.
+                await client.query("UPDATE recipes SET household_id = $1 WHERE household_id = $2", [target, current]);
+                await client.query("UPDATE shopping_list SET household_id = $1 WHERE household_id = $2", [target, current]);
+                await client.query("UPDATE generated_shopping_list SET household_id = $1 WHERE household_id = $2", [target, current]);
+            }
+
+            await client.query(
+                `INSERT INTO household_member (household_id, user_id, role)
+                 VALUES ($1, $2, 'member')
+                 ON CONFLICT (user_id) DO UPDATE SET household_id = $1, role = 'member'`,
+                [target, userId],
+            );
+
+            // The old solo household is now empty — remove it.
+            if (current && soleMember) {
+                await client.query("DELETE FROM household WHERE id = $1", [current]);
+            }
+        }
+
+        await client.query("UPDATE household_invite SET accepted_at = now() WHERE id = $1", [invite.id]);
+        await client.query("COMMIT");
+        return { household_name: invite.household_name, alreadyMember: current === target };
+    } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+    } finally {
+        client.release();
+    }
+}
+
+// Move a user out of their current household into a fresh solo one they own.
+// Shared data stays with the old household. Used by leave and remove-member.
+async function moveUserToNewHousehold(client, userId, name) {
+    const { rows } = await client.query(
+        "INSERT INTO household (name) VALUES ($1) RETURNING id",
+        [name || "My kitchen"],
+    );
+    const newId = rows[0].id;
+    await client.query(
+        `INSERT INTO household_member (household_id, user_id, role)
+         VALUES ($1, $2, 'owner')
+         ON CONFLICT (user_id) DO UPDATE SET household_id = $1, role = 'owner'`,
+        [newId, userId],
+    );
+    return newId;
+}
+
+async function leaveHousehold(userId, displayName) {
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+        const { rows } = await client.query(
+            "SELECT household_id, role FROM household_member WHERE user_id = $1",
+            [userId],
+        );
+        const membership = rows[0];
+        if (!membership) throw withStatus("You're not in a household.", 400);
+        const { household_id: hh, role } = membership;
+        const { rows: cnt } = await client.query(
+            "SELECT COUNT(*)::int AS n FROM household_member WHERE household_id = $1",
+            [hh],
+        );
+        if (cnt[0].n <= 1) throw withStatus("You're the only member — there's nothing to leave.", 400);
+
+        // Owner leaving hands ownership to the earliest-joined remaining member.
+        if (role === "owner") {
+            await client.query(
+                `UPDATE household_member SET role = 'owner'
+                 WHERE user_id = (
+                     SELECT user_id FROM household_member
+                     WHERE household_id = $1 AND user_id <> $2
+                     ORDER BY joined_at ASC LIMIT 1
+                 )`,
+                [hh, userId],
+            );
+        }
+        await moveUserToNewHousehold(client, userId, displayName ? `${displayName}'s kitchen` : "My kitchen");
+        await client.query("COMMIT");
+    } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+    } finally {
+        client.release();
+    }
+}
+
+async function removeMember(householdId, targetUserId) {
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+        const { rows } = await client.query(
+            "SELECT role FROM household_member WHERE household_id = $1 AND user_id = $2",
+            [householdId, targetUserId],
+        );
+        if (!rows[0]) throw withStatus("That person isn't in your household.", 404);
+        await moveUserToNewHousehold(client, targetUserId, "My kitchen");
+        await client.query("COMMIT");
+    } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+    } finally {
+        client.release();
+    }
+}
+
+// ========= RECIPE IMPORT RATE LIMITING ========= //
+// The import/estimate endpoints each incur a fetch + LLM cost per call, so we
+// rate-limit by counting calls (not saved recipes) in a rolling 6-hour window,
+// scoped per household. `action` keeps the two endpoints on independent windows.
+
+async function countRecentImports(householdId, action) {
+    const { rows } = await pool.query(
+        `SELECT count(*)::int AS count
+         FROM recipe_imports
+         WHERE household_id = $1
+           AND action = $2
+           AND created_at > now() - interval '6 hours'`,
+        [householdId, action],
+    );
+    return rows[0].count;
+}
+
+async function recordImport(householdId, action) {
+    await pool.query(
+        "INSERT INTO recipe_imports (household_id, action) VALUES ($1, $2)",
+        [householdId, action],
+    );
+}
+
+// ========= RECIPE SHARING ========= //
+// A share link is a stable token per recipe. Anyone signed in can preview it and
+// save a copy into their own household.
+
+async function getOrCreateShareToken(recipeId, userId) {
+    const existing = await pool.query(
+        "SELECT token FROM recipe_shares WHERE recipe_id = $1",
+        [recipeId],
+    );
+    if (existing.rows[0]) return existing.rows[0].token;
+
+    // ON CONFLICT handles a concurrent share of the same recipe (recipe_id is
+    // unique) — return whichever token won the race.
+    const { rows } = await pool.query(
+        `INSERT INTO recipe_shares (recipe_id, created_by)
+         VALUES ($1, $2)
+         ON CONFLICT (recipe_id) DO UPDATE SET recipe_id = EXCLUDED.recipe_id
+         RETURNING token`,
+        [recipeId, userId],
+    );
+    return rows[0].token;
+}
+
+// Resolve a token to its source recipe row (or null for an unknown token / a
+// recipe that has since been deleted — the share row cascades away with it).
+async function getSharedRecipeByToken(token) {
+    const { rows } = await pool.query(
+        `SELECT r.*
+         FROM recipe_shares rs
+         INNER JOIN recipes r ON r.id = rs.recipe_id
+         WHERE rs.token = $1`,
+        [token],
+    );
+    return rows[0] ?? null;
+}
+
+// ========= ADMIN ANALYTICS ========= //
+// Append-only usage event. Fire-and-forget: analytics must never break or slow
+// a write, so this swallows its own errors and callers do not await it.
+async function recordEvent(type, { userId = null, householdId = null, meta = null } = {}) {
+    try {
+        await pool.query(
+            `INSERT INTO app_events (type, user_id, household_id, meta)
+             VALUES ($1, $2, $3, $4)`,
+            [type, userId, householdId, meta ? JSON.stringify(meta) : null],
+        );
+    } catch (error) {
+        console.error("recordEvent failed:", error.message);
+    }
 }
 
 module.exports = {
+    getHouseholdIdForUser,
+    ensureHouseholdForUser,
+    getHouseholdById,
+    getHouseholdMembers,
+    getMemberRole,
+    getHouseholdMemberCount,
+    renameHousehold,
+    getPendingInvites,
+    createInvite,
+    revokeInvite,
+    acceptInvite,
+    leaveHousehold,
+    removeMember,
     getAllRecipes,
     findOneRecipe,
     createRecipe,
@@ -433,6 +910,7 @@ module.exports = {
     createShoppingList,
     getShoppingListItems,
     deleteShoppingList,
+    clearGeneratedShoppingList,
     allRecipesOnMenu,
     removeIsOnMenuRecipes,
     createCustomProduct,
@@ -443,9 +921,15 @@ module.exports = {
     getRecipeTags,
     updateRecipe,
     createShoppingListByAisles,
+    addForgottenItemToGeneratedList,
     getGeneratedShoppingListItems,
     toggleCollected,
     setRecipeFavorite,
     deleteProductItemBoth,
     getCustomProductByName,
+    countRecentImports,
+    recordImport,
+    getOrCreateShareToken,
+    getSharedRecipeByToken,
+    recordEvent,
 };

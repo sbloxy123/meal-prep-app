@@ -12,111 +12,93 @@ const {
 
 async function createShoppingList(req, res, next) {
     try {
-        const allRecipes = await db.getAllRecipes();
-        const allTags = await db.getAllTags();
-        const singleRecipeTags = await db.getSingleRecipeTags();
-        const singleRecipeIngredients = await db.getSingleRecipeIngredients();
-
-        // move this to a middleware later - /middleware/validate.js
-        // console.log("req.body: ", req.body);
-
         const formData = {
             ingredients: [].concat(req.body.ingredients || []),
             recipeId: req.body.recipeId,
         };
         const result = recipeShoppingListSchema.safeParse(formData);
-        // console.log("parsed schema result: ", result);
 
         if (!result.success) {
-            return res.status(400).render("index", {
-                errors: result.error.flatten().fieldErrors,
-                oldData: req.body,
-                recipesPageTitle: "Our recipes",
-                recipeItems: allRecipes,
-                allTags,
-                singleRecipeTags,
-                singleRecipeIngredients,
-            });
+            return res.status(400).json({ errors: result.error.flatten().fieldErrors });
         }
 
-        const data = result.data;
-        // console.log("shopping list ingredients data", data);
-        await db.createShoppingList(data);
-
-        res.redirect("/");
+        await db.createShoppingList(result.data, req.householdId, req.user.id);
+        db.recordEvent("week_add", {
+            userId: req.user.id,
+            householdId: req.householdId,
+            meta: result.data.recipeId ? { recipe_id: result.data.recipeId } : null,
+        });
+        res.status(201).json({ success: true });
     } catch (error) {
-        console.error(error);
         next(error);
     }
 }
 
 async function getShoppingList(req, res, next) {
-    const allRecipesOnMenu = await db.allRecipesOnMenu();
-    const singleRecipeIngredients = await db.getSingleRecipeIngredients();
-    const singleRecipeTags = await db.getSingleRecipeTags();
-    const allTags = await db.getAllTags();
-    const shoppingList = await db.getShoppingListItems();
-    const shoppingListIngredientsByRecipe =
-        await db.getShoppingListIngredientsByRecipe();
-
-    // todo - set up api to pull in data from google keep?
-
     try {
-        res.render("shoppingList", {
-            shoppingListPageTitle: "Shopping Items",
-            shoppingList: shoppingList,
-            allRecipesOnMenu: allRecipesOnMenu,
-            singleRecipeIngredients: singleRecipeIngredients,
-            singleRecipeTags: singleRecipeTags,
+        const householdId = req.householdId;
+        const [shoppingList, allRecipesOnMenu, singleRecipeIngredients, singleRecipeTags, allTags, shoppingListIngredientsByRecipe, householdMemberCount] =
+            await Promise.all([
+                db.getShoppingListItems(householdId),
+                db.allRecipesOnMenu(householdId),
+                db.getSingleRecipeIngredients(householdId),
+                db.getSingleRecipeTags(householdId),
+                db.getAllTags(householdId),
+                db.getShoppingListIngredientsByRecipe(householdId),
+                db.getHouseholdMemberCount(householdId),
+            ]);
+
+        res.json({
+            shoppingList,
+            allRecipesOnMenu,
+            singleRecipeIngredients,
+            singleRecipeTags,
             allTags,
             shoppingListIngredientsByRecipe,
+            householdMemberCount,
         });
     } catch (error) {
-        console.error(error);
         next(error);
     }
 }
 
 async function deleteShoppingList(req, res, next) {
     try {
-        await db.deleteShoppingList();
-        await db.removeIsOnMenuRecipes();
-        res.redirect("/");
+        await db.deleteShoppingList(req.householdId);
+        await db.removeIsOnMenuRecipes(req.householdId);
+        res.json({ success: true });
     } catch (error) {
-        console.error(error);
+        next(error);
+    }
+}
+
+// §8.1 — close the loop after shopping: clear the draft list, the generated
+// aisle list, and take every recipe off this week, ready for a fresh start.
+// Composes existing queries; no schema change.
+async function finishShop(req, res, next) {
+    try {
+        const householdId = req.householdId;
+        await db.deleteShoppingList(householdId);
+        await db.clearGeneratedShoppingList(householdId);
+        await db.removeIsOnMenuRecipes(householdId);
+        res.json({ success: true });
+    } catch (error) {
         next(error);
     }
 }
 
 async function createCustomProduct(req, res, next) {
     try {
-        const allRecipes = await db.getAllRecipes();
-        const allTags = await db.getAllTags();
-        const singleRecipeTags = await db.getSingleRecipeTags();
-        const singleRecipeIngredients = await db.getSingleRecipeIngredients();
-
-        const formData = {
-            custom_product: req.body.custom_product,
-        };
+        const formData = { custom_product: req.body.custom_product };
         const result = customProductSchema.safeParse(formData);
 
         if (!result.success) {
-            return res.status(400).render("index", {
-                errors: result.error.flatten().fieldErrors,
-                oldData: req.body,
-                recipesPageTitle: "Our recipes",
-                recipeItems: allRecipes,
-                allTags,
-                singleRecipeTags,
-                singleRecipeIngredients,
-            });
+            return res.status(400).json({ errors: result.error.flatten().fieldErrors });
         }
-        const data = result.data;
 
-        await db.createCustomProduct(data.custom_product);
-        res.redirect("/shopping-list");
+        await db.createCustomProduct(result.data.custom_product, req.householdId);
+        res.status(201).json({ success: true });
     } catch (error) {
-        console.error(error);
         next(error);
     }
 }
@@ -129,14 +111,9 @@ async function updateCustomProductItem(req, res, next) {
         };
         const result = customProductSchema.safeParse(formData);
 
-        const data = result.data;
-        await db.updateCustomProduct(
-            data.custom_product_id,
-            data.custom_product,
-        );
-        res.redirect("/shopping-list");
+        await db.updateCustomProduct(result.data.custom_product_id, result.data.custom_product, req.householdId);
+        res.json({ success: true });
     } catch (error) {
-        console.error(error);
         next(error);
     }
 }
@@ -149,54 +126,42 @@ async function updateShoppingListItem(req, res, next) {
         };
         const result = recipeIngredientSchema.safeParse(formData);
 
-        const data = result.data;
-        await db.updateIngredient(data.ingredient_id, data.ingredient_name);
-        res.redirect("/shopping-list");
+        await db.updateIngredient(result.data.ingredient_id, result.data.ingredient_name, req.householdId);
+        res.json({ success: true });
     } catch (error) {
-        console.error(error);
         next(error);
     }
 }
 
 async function deleteSingleShoppingListItem(req, res, next) {
     try {
-        const formData = {
-            shoppingItemId: req.params.id,
-        };
-        const result = shoppingListItemSchema.safeParse(formData);
-        const data = result.data;
-        // console.log(data);
-        await db.removeSingleShoppingListItem(data.shoppingItemId);
-        res.redirect("/shopping-list");
+        const result = shoppingListItemSchema.safeParse({ shoppingItemId: req.params.id });
+        await db.removeSingleShoppingListItem(result.data.shoppingItemId, req.householdId);
+        res.json({ success: true });
     } catch (error) {
-        console.error(error);
         next(error);
     }
 }
 
 async function removeRecipeFromShoppingList(req, res, next) {
     try {
-        const recipeId = req.params.id;
-        await db.removeRecipeFromShoppingList(recipeId);
-        res.redirect("/");
+        await db.removeRecipeFromShoppingList(req.params.id, req.householdId);
+        res.json({ success: true });
     } catch (error) {
-        console.error(error);
         next(error);
     }
 }
 
 async function organiseShoppingList(req, res, next) {
     try {
-        const shoppingList = await db.getShoppingListItems();
+        const householdId = req.householdId;
+        const shoppingList = await db.getShoppingListItems(householdId);
 
         const formattedList = shoppingList.map((item) => ({
             name: item.ingredient_name || item.custom_product,
             recipe_count: item.recipe_count,
             is_custom_product: item.quantity === 0 || item.quantity === "0",
         }));
-
-        // todo: pull this data into database so it can be stored
-        // ~ idea - add associated meals so user can see what the ingredient is for
 
         const message = await client.messages.create({
             model: "claude-haiku-4-5-20251001",
@@ -224,7 +189,7 @@ async function organiseShoppingList(req, res, next) {
                 },
             ],
         });
-        // res.json({ result: message.content[0].text });
+
         const rawText = message.content[0].text
             .replace(/^```json\n?/, "")
             .replace(/\n?```$/, "")
@@ -239,78 +204,19 @@ async function organiseShoppingList(req, res, next) {
             try {
                 result = JSON.parse(jsonrepair(rawText));
             } catch (repairError) {
-                console.error(
-                    "[organiseShoppingList] JSON parse failed:",
-                    repairError.message,
-                );
-                console.error(
-                    "[organiseShoppingList] Raw text that failed to parse:",
-                    rawText,
-                );
+                console.error("[organiseShoppingList] JSON parse failed:", repairError.message);
                 return res.status(400).json({
                     error: "Failed to parse Claude response as JSON",
                     details: repairError.message,
-                    rawResponse: rawText,
                 });
             }
         }
 
-        // result = {
-        //     items: [
-        //         {
-        //             product: "eggs",
-        //             quantity: "",
-        //             aisle: "Dairy & Eggs",
-        //             recipe_count: 2,
-        //             is_custom_product: false,
-        //         },
-        //         {
-        //             product: "chicken",
-        //             quantity: "",
-        //             aisle: "Fresh Meat & Poultry",
-        //             recipe_count: 1,
-        //             is_custom_product: false,
-        //         },
-        //         {
-        //             product: "Peas",
-        //             quantity: "",
-        //             aisle: "Frozen Vegetables",
-        //             recipe_count: 0,
-        //             is_custom_product: true,
-        //         },
-        //         {
-        //             product: "Pea",
-        //             quantity: "",
-        //             aisle: "Frozen Vegetables",
-        //             recipe_count: 0,
-        //             is_custom_product: true,
-        //         },
-        //         {
-        //             product: "beef",
-        //             quantity: "",
-        //             aisle: "Fresh Meat & Poultry",
-        //             recipe_count: 1,
-        //             is_custom_product: false,
-        //         },
-        //         {
-        //             product: "sausages",
-        //             quantity: "",
-        //             aisle: "Fresh Meat & Poultry",
-        //             recipe_count: 0,
-        //             is_custom_product: true,
-        //         },
-        //         {
-        //             product: "cooking oil",
-        //             quantity: "",
-        //             aisle: "Oils & Condiments",
-        //             recipe_count: 0,
-        //             is_custom_product: true,
-        //         },
-        //     ],
-        // };
-        // console.log(result);
-
-        await db.createShoppingListByAisles(result);
+        await db.createShoppingListByAisles(result, householdId);
+        db.recordEvent("list_generated", {
+            userId: req.user.id,
+            householdId,
+        });
         res.json({ success: true });
     } catch (error) {
         next(error);
@@ -319,6 +225,7 @@ async function organiseShoppingList(req, res, next) {
 
 async function parseIngredientsWithAI(req, res, next) {
     try {
+        const householdId = req.householdId;
         const rawText = req.body.ingredients_text;
         if (!rawText || !rawText.trim()) {
             return res.status(400).json({ error: "No ingredients text provided" });
@@ -360,9 +267,9 @@ Raw text: ${rawText}`,
         for (const item of items) {
             const trimmed = item.trim();
             if (trimmed) {
-                await db.createCustomProduct(trimmed);
-                const rows = await db.getCustomProductByName(trimmed);
-                if (rows) addedItems.push(rows);
+                await db.createCustomProduct(trimmed, householdId);
+                const row = await db.getCustomProductByName(trimmed, householdId);
+                if (row) addedItems.push(row);
             }
         }
 
@@ -376,6 +283,7 @@ module.exports = {
     createShoppingList,
     getShoppingList,
     deleteShoppingList,
+    finishShop,
     createCustomProduct,
     updateShoppingListItem,
     updateCustomProductItem,
