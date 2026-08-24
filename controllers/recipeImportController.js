@@ -1003,7 +1003,16 @@ async function fetchYouTubeSnippet(id) {
         const data = await r.json();
         const snip = data?.items?.[0]?.snippet;
         if (!snip) return null;
-        return { title: snip.title || "", description: snip.description || "" };
+        return {
+            title: snip.title || "",
+            description: snip.description || "",
+            thumbnail:
+                snip.thumbnails?.maxres?.url ||
+                snip.thumbnails?.high?.url ||
+                snip.thumbnails?.standard?.url ||
+                snip.thumbnails?.medium?.url ||
+                null,
+        };
     } catch {
         return null;
     } finally {
@@ -1031,8 +1040,9 @@ async function fetchOgCaption(url) {
     return caption.length >= MIN_CAPTION_LEN ? caption : null;
 }
 
-// TikTok exposes a free public oEmbed whose `title` field is the post caption.
-async function fetchTikTokCaption(url) {
+// TikTok exposes a free public oEmbed whose `title` is the caption (and a
+// `thumbnail_url` cover image). Returns { caption, imageUrl } or null.
+async function fetchTikTokPost(url) {
     // Short links (vm./vt.tiktok.com) must be resolved to the canonical video URL.
     let target = url;
     try {
@@ -1061,7 +1071,8 @@ async function fetchTikTokCaption(url) {
         if (!r.ok) return null;
         const data = await r.json();
         const title = typeof data?.title === "string" ? data.title.trim() : "";
-        return title.length >= MIN_CAPTION_LEN ? title : null;
+        if (title.length < MIN_CAPTION_LEN) return null;
+        return { caption: title, imageUrl: data?.thumbnail_url || null };
     } catch {
         return null;
     } finally {
@@ -1070,8 +1081,9 @@ async function fetchTikTokCaption(url) {
 }
 
 // Instagram has no free caption source (login wall). Use an Apify actor when
-// APIFY_TOKEN is set; returns null (→ paste fallback) if unset, slow, or failing.
-async function fetchInstagramCaption(url) {
+// APIFY_TOKEN is set; returns { caption, imageUrl } or null (→ paste fallback)
+// if unset, slow, or failing.
+async function fetchInstagramPost(url) {
     if (!process.env.APIFY_TOKEN) return null;
     const actor = process.env.APIFY_IG_ACTOR || "apify~instagram-scraper";
     const api = `https://api.apify.com/v2/acts/${actor}/run-sync-get-dataset-items?token=${encodeURIComponent(
@@ -1099,7 +1111,12 @@ async function fetchInstagramCaption(url) {
         const item = Array.isArray(items) ? items[0] : null;
         const raw = item?.caption;
         const caption = (typeof raw === "string" ? raw : raw?.text || "").trim();
-        return caption.length >= MIN_CAPTION_LEN ? caption : null;
+        if (caption.length < MIN_CAPTION_LEN) return null;
+        const imageUrl =
+            item?.displayUrl ||
+            (Array.isArray(item?.images) ? item.images[0] : null) ||
+            null;
+        return { caption, imageUrl };
     } catch (err) {
         console.error("[social] Apify Instagram failed:", err.message);
         return null;
@@ -1108,7 +1125,8 @@ async function fetchInstagramCaption(url) {
     }
 }
 
-// Resolve a post URL to its caption text, or null if we can't get enough.
+// Resolve a post URL to { caption, imageUrl }, or null if we can't get a usable
+// caption. imageUrl (a cover/thumbnail) is best-effort and may be null.
 async function getSocialCaption(url) {
     let host = "";
     try {
@@ -1126,19 +1144,22 @@ async function getSocialCaption(url) {
                     .filter(Boolean)
                     .join("\n\n")
                     .trim();
-                if (combined.length >= MIN_CAPTION_LEN) return combined;
+                if (combined.length >= MIN_CAPTION_LEN) {
+                    return { caption: combined, imageUrl: snip.thumbnail || null };
+                }
             }
         }
     } else if (host === "tiktok.com" || host.endsWith(".tiktok.com")) {
-        const cap = await fetchTikTokCaption(url);
-        if (cap) return cap;
+        const post = await fetchTikTokPost(url);
+        if (post) return post;
     } else if (host === "instagram.com" || host.endsWith(".instagram.com")) {
-        const cap = await fetchInstagramCaption(url);
-        if (cap) return cap;
+        const post = await fetchInstagramPost(url);
+        if (post) return post;
     }
 
     // Fallback: Open Graph / meta tags (covers other sites; usually null for IG/TikTok).
-    return fetchOgCaption(url);
+    const cap = await fetchOgCaption(url);
+    return cap ? { caption: cap, imageUrl: null } : null;
 }
 
 async function importSocial(req, res, next) {
@@ -1150,17 +1171,21 @@ async function importSocial(req, res, next) {
         const { url, text } = parsed.data;
         const pasted = text && text.trim() ? text.trim() : null;
 
-        // Get the caption: use pasted text if given, else try to fetch it.
+        // Get the caption (+ a cover image where available): use pasted text if
+        // given, else try to fetch it.
         let caption = pasted;
+        let imageUrl = null;
         if (!caption && url) {
             try {
                 await assertSafeUrl(url);
             } catch (guardError) {
                 return res.status(400).json({ error: guardError.message });
             }
-            caption = await getSocialCaption(url);
+            const social = await getSocialCaption(url);
             // Blocked / too sparse — ask for a paste. No AI call, no slot spent.
-            if (!caption) return res.json({ needsCaption: true });
+            if (!social || !social.caption) return res.json({ needsCaption: true });
+            caption = social.caption;
+            imageUrl = social.imageUrl || null;
         }
         if (!caption) {
             return res.status(400).json({ error: "A URL or caption text is required" });
@@ -1192,7 +1217,17 @@ async function importSocial(req, res, next) {
 
         const draft = buildDraft(fields, url || null);
         draft.collections = ["Social"];
-        delete draft._imageUrl; // don't trust/serve a scraped social image
+        delete draft._imageUrl;
+        // Upload the post's cover/thumbnail to Cloudinary so we keep a permanent
+        // asset rather than an expiring social CDN link (null if Cloudinary isn't
+        // configured or the upload fails).
+        if (imageUrl) {
+            const uploaded = await uploadFromUrl(imageUrl);
+            if (uploaded) {
+                draft.image_url = uploaded.image_url;
+                draft.image_public_id = uploaded.image_public_id;
+            }
+        }
         res.json(draft);
     } catch (error) {
         next(error);
