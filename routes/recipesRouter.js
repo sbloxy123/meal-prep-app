@@ -12,6 +12,8 @@ recipesRouter.post("/", recipesController.createRecipe);
 // id. All rate-limited per household (see recipeImportController).
 recipesRouter.post("/import", recipeImportController.importRecipe);
 recipesRouter.post("/generate-from-title", recipeImportController.generateFromTitle);
+// "Give me inspiration" — N suggested recipe ideas (title/tags/ingredients).
+recipesRouter.post("/suggest", recipeImportController.suggestRecipes);
 recipesRouter.post("/estimate-macros", recipeImportController.estimateMacros);
 recipesRouter.post("/improve", recipeImportController.improveRecipe);
 // Social post (Instagram/TikTok/YouTube) URL or pasted caption → draft.

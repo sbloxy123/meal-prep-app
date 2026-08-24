@@ -29,6 +29,11 @@ const GENERATE_LIMIT = 15;
 const PHOTO_LIMIT = 15;
 const IMPROVE_LIMIT = 15;
 const SOCIAL_LIMIT = 20;
+const SUGGEST_LIMIT = 15;
+// How many ideas we ask for per "Give me inspiration" call.
+const SUGGEST_COUNT = 6;
+// Keep the free-text steer short — it's a nudge, not a document.
+const MAX_HINT_LEN = 200;
 // A fetched caption shorter than this is treated as "blocked/too sparse" (a login
 // wall or a bare title) → we ask the user to paste the caption instead.
 const MIN_CAPTION_LEN = 40;
@@ -787,6 +792,97 @@ Give realistic quantities in the ingredient names and estimate the per-serving m
     }
 }
 
+// ---------- recipe inspiration (A2) ----------
+
+// Normalise one raw suggestion from the model into { title, tags[], ingredients[] }
+// of clean strings, or null if it hasn't got a usable title + ingredients.
+function normaliseSuggestion(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    const title = typeof raw.title === "string" ? raw.title.trim() : "";
+    if (!title) return null;
+
+    const toStrings = (value) =>
+        (Array.isArray(value) ? value : [])
+            .map((v) => (typeof v === "string" ? v : v?.name || ""))
+            .map((s) => s.replace(/\s+/g, " ").trim())
+            .filter(Boolean);
+
+    const ingredients = toStrings(raw.ingredients);
+    if (ingredients.length === 0) return null;
+
+    return { title, tags: toStrings(raw.tags), ingredients };
+}
+
+async function suggestRecipes(req, res, next) {
+    try {
+        const rawHint = typeof req.body?.hint === "string" ? req.body.hint.trim() : "";
+        const hint = rawHint.slice(0, MAX_HINT_LEN);
+
+        const householdId = req.householdId;
+        const recent = await db.countRecentImports(householdId, "suggest");
+        if (recent >= SUGGEST_LIMIT) {
+            return res.status(429).json({
+                error: "Suggestion limit reached — 15 per 6 hours. Try again later.",
+            });
+        }
+        await db.recordImport(householdId, "suggest");
+
+        const steer = hint
+            ? `The user is after: "${hint}". Tailor every idea to that.`
+            : "Give a varied mix of crowd-pleasing everyday home dinners.";
+
+        const message = await client.messages.create({
+            model: AI_MODEL,
+            max_tokens: 1536,
+            messages: [
+                {
+                    role: "user",
+                    content: `You are a recipe idea generator. Suggest ${SUGGEST_COUNT} home-cooking recipe ideas.
+${steer}
+
+Return ONLY valid raw JSON (no markdown, no code fences) in EXACTLY this shape:
+{
+  "suggestions": [
+    { "title": string, "tags": [string], "ingredients": [string] }
+  ]
+}
+- "title" is the dish name (e.g. "Chicken katsu curry").
+- "tags" are 1-3 short collection labels a home cook would file it under (e.g. "Dinner", "Kids", "Vegetarian", "Quick"). Capitalise them.
+- "ingredients" are 5-10 plain ingredient names only — NO quantities, numbers or units (e.g. "chicken breast", "panko breadcrumbs", "curry sauce", "rice").
+Give ${SUGGEST_COUNT} distinct ideas.`,
+                },
+            ],
+        });
+
+        const raw = stripFences(message.content[0].text);
+        let data;
+        try {
+            data = JSON.parse(raw);
+        } catch {
+            try {
+                data = JSON.parse(jsonrepair(raw));
+            } catch {
+                return res.status(400).json({ error: "Could not get ideas just now." });
+            }
+        }
+
+        const list = Array.isArray(data?.suggestions)
+            ? data.suggestions
+            : Array.isArray(data)
+              ? data
+              : [];
+        const suggestions = list.map(normaliseSuggestion).filter(Boolean);
+
+        if (suggestions.length === 0) {
+            return res.status(400).json({ error: "Could not get ideas just now." });
+        }
+
+        res.json({ suggestions });
+    } catch (error) {
+        next(error);
+    }
+}
+
 // ---------- photo → recipe (vision) ----------
 
 const PHOTO_PROMPT = `You extract a single structured recipe from a photograph (or several photographs) of a recipe — typically a cookbook page, which may be spread across two facing pages. Treat all the images as ONE recipe.
@@ -1239,6 +1335,7 @@ module.exports = {
     estimateMacros,
     improveRecipe,
     generateFromTitle,
+    suggestRecipes,
     parseFromPhoto,
     importSocial,
 };
