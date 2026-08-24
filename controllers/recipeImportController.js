@@ -32,6 +32,9 @@ const SOCIAL_LIMIT = 20;
 // A fetched caption shorter than this is treated as "blocked/too sparse" (a login
 // wall or a bare title) → we ask the user to paste the caption instead.
 const MIN_CAPTION_LEN = 40;
+// Instagram scraping (Apify) is slow; allow a generous window before we give up
+// and fall back to the paste prompt. Slightly above the Apify run timeout (60s).
+const IG_SCRAPE_TIMEOUT_MS = 65_000;
 // Defense-in-depth cap on decoded image bytes (base64 ~4/3 the raw size); the
 // route body parser (app.js) caps the payload itself.
 const MAX_TOTAL_IMAGE_BYTES = 12 * 1024 * 1024; // 12 MB
@@ -1028,6 +1031,83 @@ async function fetchOgCaption(url) {
     return caption.length >= MIN_CAPTION_LEN ? caption : null;
 }
 
+// TikTok exposes a free public oEmbed whose `title` field is the post caption.
+async function fetchTikTokCaption(url) {
+    // Short links (vm./vt.tiktok.com) must be resolved to the canonical video URL.
+    let target = url;
+    try {
+        const host = new URL(url).hostname.replace(/^www\./, "").toLowerCase();
+        if (host === "vm.tiktok.com" || host === "vt.tiktok.com") {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+            try {
+                const r = await fetch(url, { redirect: "follow", signal: controller.signal });
+                if (r.url) target = r.url;
+            } finally {
+                clearTimeout(timer);
+            }
+        }
+    } catch {
+        /* keep the original url */
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    try {
+        const r = await fetch(
+            `https://www.tiktok.com/oembed?url=${encodeURIComponent(target)}`,
+            { signal: controller.signal },
+        );
+        if (!r.ok) return null;
+        const data = await r.json();
+        const title = typeof data?.title === "string" ? data.title.trim() : "";
+        return title.length >= MIN_CAPTION_LEN ? title : null;
+    } catch {
+        return null;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+// Instagram has no free caption source (login wall). Use an Apify actor when
+// APIFY_TOKEN is set; returns null (→ paste fallback) if unset, slow, or failing.
+async function fetchInstagramCaption(url) {
+    if (!process.env.APIFY_TOKEN) return null;
+    const actor = process.env.APIFY_IG_ACTOR || "apify~instagram-scraper";
+    const api = `https://api.apify.com/v2/acts/${actor}/run-sync-get-dataset-items?token=${encodeURIComponent(
+        process.env.APIFY_TOKEN,
+    )}&timeout=60`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), IG_SCRAPE_TIMEOUT_MS);
+    try {
+        const r = await fetch(api, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                directUrls: [url],
+                resultsType: "posts",
+                resultsLimit: 1,
+                addParentData: false,
+            }),
+            signal: controller.signal,
+        });
+        if (!r.ok) {
+            console.error("[social] Apify Instagram returned", r.status);
+            return null;
+        }
+        const items = await r.json();
+        const item = Array.isArray(items) ? items[0] : null;
+        const raw = item?.caption;
+        const caption = (typeof raw === "string" ? raw : raw?.text || "").trim();
+        return caption.length >= MIN_CAPTION_LEN ? caption : null;
+    } catch (err) {
+        console.error("[social] Apify Instagram failed:", err.message);
+        return null;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
 // Resolve a post URL to its caption text, or null if we can't get enough.
 async function getSocialCaption(url) {
     let host = "";
@@ -1036,6 +1116,7 @@ async function getSocialCaption(url) {
     } catch {
         return null;
     }
+
     if (host === "youtu.be" || host.endsWith("youtube.com")) {
         const id = youtubeVideoId(url);
         if (id) {
@@ -1048,8 +1129,15 @@ async function getSocialCaption(url) {
                 if (combined.length >= MIN_CAPTION_LEN) return combined;
             }
         }
+    } else if (host === "tiktok.com" || host.endsWith(".tiktok.com")) {
+        const cap = await fetchTikTokCaption(url);
+        if (cap) return cap;
+    } else if (host === "instagram.com" || host.endsWith(".instagram.com")) {
+        const cap = await fetchInstagramCaption(url);
+        if (cap) return cap;
     }
-    // Instagram / TikTok / YouTube-without-key / anything else → og-tags.
+
+    // Fallback: Open Graph / meta tags (covers other sites; usually null for IG/TikTok).
     return fetchOgCaption(url);
 }
 

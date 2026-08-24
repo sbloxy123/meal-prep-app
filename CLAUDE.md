@@ -34,8 +34,15 @@ ANTHROPIC_API_KEY=
 
 # Optional — used by POST /recipes/import-social for the YouTube path (Data API,
 # reads video title + description). If unset, YouTube falls back to og:description
-# scraping (truncated) and Instagram/TikTok rely on the "paste the caption" flow.
+# scraping (truncated).
 YOUTUBE_API_KEY=
+
+# Optional — enables the Instagram path of POST /recipes/import-social via an Apify
+# actor (IG login-walls server requests, so there's no free caption source). If
+# unset, Instagram falls back to the "paste the caption" flow. TikTok needs no key
+# (free public oEmbed). APIFY_IG_ACTOR overrides the default actor id.
+APIFY_TOKEN=
+APIFY_IG_ACTOR=apify~instagram-scraper
 
 # Assembled connection string — required by node-pg-migrate and used on Railway
 # (Railway Postgres internal host: postgres.railway.internal)
