@@ -274,4 +274,106 @@ async function users(req, res, next) {
     }
 }
 
-module.exports = { overview, users };
+// ===== Premium comps (admin writes) =====
+// Entitlement is household.plan, so a "comp" is just a premium household with no
+// Stripe subscription — nothing overwrites it (the Stripe callbacks only touch
+// households that actually have a subscription). Granted premium never expires
+// until revoked here.
+
+async function householdIdForEmail(email) {
+    const { rows } = await pool.query(
+        `SELECT hm.household_id
+         FROM household_member hm JOIN "user" u ON u.id = hm.user_id
+         WHERE lower(u.email) = lower($1)
+         LIMIT 1`,
+        [email],
+    );
+    return rows[0]?.household_id ?? null;
+}
+
+// GET /admin/premium/comps — households comped to premium (premium, no Stripe sub).
+async function comps(req, res, next) {
+    try {
+        const { rows } = await pool.query(`
+            SELECT h.id,
+                   h.created_at,
+                   COALESCE(
+                       json_agg(u.email ORDER BY u.email) FILTER (WHERE u.email IS NOT NULL),
+                       '[]'
+                   ) AS emails
+            FROM household h
+            LEFT JOIN household_member hm ON hm.household_id = h.id
+            LEFT JOIN "user" u ON u.id = hm.user_id
+            WHERE h.plan = 'premium' AND h.stripe_subscription_id IS NULL
+            GROUP BY h.id
+            ORDER BY h.created_at DESC NULLS LAST
+        `);
+        res.json({ comps: rows });
+    } catch (error) {
+        next(error);
+    }
+}
+
+// POST /admin/premium/grant { email } — comp that user's household to premium.
+async function grantPremium(req, res, next) {
+    try {
+        const email = typeof req.body?.email === "string" ? req.body.email.trim() : "";
+        if (!email) return res.status(400).json({ error: "An email is required." });
+        const householdId = await householdIdForEmail(email);
+        if (!householdId) return res.status(404).json({ error: "No account with that email." });
+
+        // Comp = premium with no expiry. Leaves any Stripe fields untouched, so a
+        // real paying household simply stays premium.
+        await pool.query(
+            "UPDATE household SET plan = 'premium', premium_until = NULL WHERE id = $1",
+            [householdId],
+        );
+        await pool.query(
+            `INSERT INTO app_events (type, user_id, household_id, meta)
+             VALUES ('premium_granted', $1, $2, $3)`,
+            [req.user.id, householdId, JSON.stringify({ email, by: req.user.email })],
+        );
+        res.json({ ok: true });
+    } catch (error) {
+        next(error);
+    }
+}
+
+// POST /admin/premium/revoke { email } — drop a comped household back to free.
+// Refuses if the household has a real Stripe subscription (cancel that in Stripe
+// instead — revoking here would only be undone by the next webhook).
+async function revokePremium(req, res, next) {
+    try {
+        const email = typeof req.body?.email === "string" ? req.body.email.trim() : "";
+        if (!email) return res.status(400).json({ error: "An email is required." });
+        const householdId = await householdIdForEmail(email);
+        if (!householdId) return res.status(404).json({ error: "No account with that email." });
+
+        const { rows } = await pool.query(
+            "SELECT stripe_subscription_id FROM household WHERE id = $1",
+            [householdId],
+        );
+        if (rows[0]?.stripe_subscription_id) {
+            return res.status(409).json({
+                error: "That household has an active paid subscription — cancel it in Stripe instead.",
+            });
+        }
+
+        await pool.query(
+            `UPDATE household
+             SET plan = 'free', premium_until = NULL, premium_payer_user_id = NULL
+             WHERE id = $1`,
+            [householdId],
+        );
+        await pool.query(
+            `INSERT INTO app_events (type, user_id, household_id, meta)
+             VALUES ('premium_revoked', $1, $2, $3)`,
+            [req.user.id, householdId, JSON.stringify({ email, by: req.user.email })],
+        );
+        res.json({ ok: true });
+    } catch (error) {
+        next(error);
+    }
+}
+
+module.exports = { overview, users, comps, grantPremium, revokePremium };
