@@ -886,6 +886,56 @@ async function checkWeeklyAllowance(householdId) {
     return { ok: used < WEEKLY_AI_LIMIT, plan, used, limit: WEEKLY_AI_LIMIT, resetsAt };
 }
 
+// ========= PREMIUM SUBSCRIPTION → HOUSEHOLD ========= //
+// The Stripe plugin keys subscriptions to the paying user; entitlement is
+// household-scoped, so we mirror a subscription's state onto the payer's
+// household (the single source of truth every allowance check reads).
+
+async function setHouseholdPremiumFromSubscription({
+    userId,
+    isPremium,
+    periodEnd = null,
+    stripeCustomerId = null,
+    stripeSubscriptionId = null,
+}) {
+    const { rows } = await pool.query(
+        "SELECT household_id FROM household_member WHERE user_id = $1",
+        [userId],
+    );
+    const householdId = rows[0]?.household_id;
+    if (!householdId) return;
+
+    await pool.query(
+        `UPDATE household SET
+             plan                   = $2,
+             premium_until          = $3,
+             stripe_customer_id     = COALESCE($4, stripe_customer_id),
+             stripe_subscription_id = $5,
+             premium_payer_user_id  = $6
+         WHERE id = $1`,
+        [
+            householdId,
+            isPremium ? "premium" : "free",
+            periodEnd,
+            stripeCustomerId,
+            isPremium ? stripeSubscriptionId : null,
+            isPremium ? userId : null,
+        ],
+    );
+}
+
+// Entitlement follows the payer: if they delete their account, their household
+// drops back to free.
+async function clearHouseholdPremiumByPayer(userId) {
+    await pool.query(
+        `UPDATE household SET
+             plan = 'free', premium_until = NULL,
+             stripe_subscription_id = NULL, premium_payer_user_id = NULL
+         WHERE premium_payer_user_id = $1`,
+        [userId],
+    );
+}
+
 // ========= RECIPE SHARING ========= //
 // A share link is a stable token per recipe. Anyone signed in can preview it and
 // save a copy into their own household.
@@ -986,6 +1036,8 @@ module.exports = {
     getHouseholdPlan,
     getWeeklyAiUsage,
     checkWeeklyAllowance,
+    setHouseholdPremiumFromSubscription,
+    clearHouseholdPremiumByPayer,
     getOrCreateShareToken,
     getSharedRecipeByToken,
     recordEvent,
