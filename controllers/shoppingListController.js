@@ -1,7 +1,13 @@
 const db = require("../db/queries");
 const Anthropic = require("@anthropic-ai/sdk");
 const { jsonrepair } = require("jsonrepair");
+const { weeklyLimitReached } = require("../lib/aiAllowance");
 const client = new Anthropic();
+
+// Per-household 6h burst ceiling for "Generate list by aisle" — the anti-abuse
+// guard that applies to everyone. The weekly free pool (weeklyLimitReached) is
+// checked first and only bites free households.
+const AISLE_LIMIT = 20;
 
 const {
     recipeShoppingListSchema,
@@ -37,7 +43,7 @@ async function createShoppingList(req, res, next) {
 async function getShoppingList(req, res, next) {
     try {
         const householdId = req.householdId;
-        const [shoppingList, allRecipesOnMenu, singleRecipeIngredients, singleRecipeTags, allTags, shoppingListIngredientsByRecipe, householdMemberCount] =
+        const [shoppingList, allRecipesOnMenu, singleRecipeIngredients, singleRecipeTags, allTags, shoppingListIngredientsByRecipe, householdMemberCount, allowance] =
             await Promise.all([
                 db.getShoppingListItems(householdId),
                 db.allRecipesOnMenu(householdId),
@@ -46,6 +52,7 @@ async function getShoppingList(req, res, next) {
                 db.getAllTags(householdId),
                 db.getShoppingListIngredientsByRecipe(householdId),
                 db.getHouseholdMemberCount(householdId),
+                db.checkWeeklyAllowance(householdId),
             ]);
 
         res.json({
@@ -56,6 +63,11 @@ async function getShoppingList(req, res, next) {
             allTags,
             shoppingListIngredientsByRecipe,
             householdMemberCount,
+            // Premium entitlement + weekly AI allowance for the whole app to read.
+            plan: allowance.plan,
+            aiUsedThisWeek: allowance.used,
+            aiWeeklyLimit: allowance.limit,
+            weekResetsAt: allowance.resetsAt,
         });
     } catch (error) {
         next(error);
@@ -155,6 +167,18 @@ async function removeRecipeFromShoppingList(req, res, next) {
 async function organiseShoppingList(req, res, next) {
     try {
         const householdId = req.householdId;
+
+        // "Generate list by aisle" is an AI call — it draws from the weekly pool
+        // and the 6h burst ceiling, same as the recipe AI endpoints.
+        if (await weeklyLimitReached(householdId, res)) return;
+        const recent = await db.countRecentImports(householdId, "aisle");
+        if (recent >= AISLE_LIMIT) {
+            return res.status(429).json({
+                error: "Aisle-sort limit reached — 20 per 6 hours. Try again later.",
+            });
+        }
+        await db.recordImport(householdId, "aisle");
+
         const shoppingList = await db.getShoppingListItems(householdId);
 
         const formattedList = shoppingList.map((item) => ({

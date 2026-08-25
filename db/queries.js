@@ -833,6 +833,59 @@ async function recordImport(householdId, action) {
     );
 }
 
+// ========= PREMIUM PLAN + WEEKLY AI ALLOWANCE ========= //
+// Free households share ONE pool of AI actions per calendar week across every
+// AI feature (all recorded into recipe_imports). Premium households skip the
+// weekly pool entirely (the per-action 6h burst ceiling in the controllers
+// still applies to everyone as a fair-use / abuse guard). The week boundary is
+// Monday 00:00 Europe/London — a fixed app timezone, so we don't need each
+// user's local zone to match the "resets Monday / this week" allowance copy.
+
+const WEEKLY_AI_LIMIT = 15;
+
+// Effective entitlement: 'premium' only while the plan is premium AND any
+// premium_until (set on cancellation to the paid-through date) is in the future.
+async function getHouseholdPlan(householdId) {
+    const { rows } = await pool.query(
+        `SELECT CASE
+                    WHEN plan = 'premium'
+                     AND (premium_until IS NULL OR premium_until > now())
+                    THEN 'premium' ELSE 'free'
+                END AS plan
+         FROM household
+         WHERE id = $1`,
+        [householdId],
+    );
+    return rows[0]?.plan ?? "free";
+}
+
+// Count of AI actions used this week and when the window resets, in one query.
+async function getWeeklyAiUsage(householdId) {
+    const { rows } = await pool.query(
+        `SELECT
+             count(*)::int AS used,
+             (date_trunc('week', now() AT TIME ZONE 'Europe/London') + interval '7 days')
+                 AT TIME ZONE 'Europe/London' AS resets_at
+         FROM recipe_imports
+         WHERE household_id = $1
+           AND created_at >= (date_trunc('week', now() AT TIME ZONE 'Europe/London'))
+                                 AT TIME ZONE 'Europe/London'`,
+        [householdId],
+    );
+    return { used: rows[0].used, resetsAt: rows[0].resets_at };
+}
+
+// One call for both enforcement (controllers) and display (GET /shopping-list).
+// Premium → always ok, unlimited. Free → ok while under the weekly pool.
+async function checkWeeklyAllowance(householdId) {
+    const plan = await getHouseholdPlan(householdId);
+    if (plan === "premium") {
+        return { ok: true, plan, used: 0, limit: WEEKLY_AI_LIMIT, resetsAt: null };
+    }
+    const { used, resetsAt } = await getWeeklyAiUsage(householdId);
+    return { ok: used < WEEKLY_AI_LIMIT, plan, used, limit: WEEKLY_AI_LIMIT, resetsAt };
+}
+
 // ========= RECIPE SHARING ========= //
 // A share link is a stable token per recipe. Anyone signed in can preview it and
 // save a copy into their own household.
@@ -929,6 +982,10 @@ module.exports = {
     getCustomProductByName,
     countRecentImports,
     recordImport,
+    WEEKLY_AI_LIMIT,
+    getHouseholdPlan,
+    getWeeklyAiUsage,
+    checkWeeklyAllowance,
     getOrCreateShareToken,
     getSharedRecipeByToken,
     recordEvent,

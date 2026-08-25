@@ -5,6 +5,7 @@ const { jsonrepair } = require("jsonrepair");
 const db = require("../db/queries");
 const { assertSafeUrl } = require("../lib/urlGuard");
 const { uploadFromUrl } = require("../lib/cloudinary");
+const { weeklyLimitReached } = require("../lib/aiAllowance");
 const {
     importUrlSchema,
     estimateMacrosSchema,
@@ -445,6 +446,7 @@ async function importRecipe(req, res, next) {
         }
 
         const householdId = req.householdId;
+        if (await weeklyLimitReached(householdId, res)) return;
         const recent = await db.countRecentImports(householdId, "import");
         if (recent >= IMPORT_LIMIT) {
             return res.status(429).json({
@@ -504,6 +506,7 @@ async function estimateMacros(req, res, next) {
         const { title, servings, ingredients } = parsed.data;
 
         const householdId = req.householdId;
+        if (await weeklyLimitReached(householdId, res)) return;
         const recent = await db.countRecentImports(householdId, "estimate");
         if (recent >= IMPORT_LIMIT) {
             return res.status(429).json({
@@ -582,6 +585,7 @@ async function improveRecipe(req, res, next) {
         const { title, servings, description, instructions, ingredients } = parsed.data;
 
         const householdId = req.householdId;
+        if (await weeklyLimitReached(householdId, res)) return;
         const recent = await db.countRecentImports(householdId, "improve");
         if (recent >= IMPROVE_LIMIT) {
             return res.status(429).json({
@@ -703,6 +707,7 @@ async function generateFromTitle(req, res, next) {
         }
 
         const householdId = req.householdId;
+        if (await weeklyLimitReached(householdId, res)) return;
         const recent = await db.countRecentImports(householdId, "generate");
         if (recent >= GENERATE_LIMIT) {
             return res.status(429).json({
@@ -819,6 +824,7 @@ async function suggestRecipes(req, res, next) {
         const hint = rawHint.slice(0, MAX_HINT_LEN);
 
         const householdId = req.householdId;
+        if (await weeklyLimitReached(householdId, res)) return;
         const recent = await db.countRecentImports(householdId, "suggest");
         if (recent >= SUGGEST_LIMIT) {
             return res.status(429).json({
@@ -982,6 +988,7 @@ async function parseFromPhoto(req, res, next) {
         }
 
         const householdId = req.householdId;
+        if (await weeklyLimitReached(householdId, res)) return;
         const recent = await db.countRecentImports(householdId, "photo");
         if (recent >= PHOTO_LIMIT) {
             return res.status(429).json({
@@ -1289,6 +1296,7 @@ async function importSocial(req, res, next) {
 
         // Rate-limit only now that we're actually going to call the model.
         const householdId = req.householdId;
+        if (await weeklyLimitReached(householdId, res)) return;
         const recent = await db.countRecentImports(householdId, "social");
         if (recent >= SOCIAL_LIMIT) {
             return res.status(429).json({
