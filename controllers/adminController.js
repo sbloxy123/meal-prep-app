@@ -40,7 +40,10 @@ async function overview(req, res, next) {
                         (SELECT COUNT(*) FROM household)::int AS households,
                         (SELECT COUNT(*) FROM (
                             SELECT 1 FROM household_member GROUP BY household_id HAVING COUNT(*) > 1
-                        ) x)::int AS multi_member
+                        ) x)::int AS multi_member,
+                        (SELECT COUNT(*) FROM household WHERE plan = 'premium')::int AS premium_households,
+                        (SELECT COUNT(*) FROM household WHERE plan = 'premium' AND stripe_subscription_id IS NOT NULL)::int AS paid_households,
+                        (SELECT COUNT(*) FROM household WHERE plan = 'premium' AND stripe_subscription_id IS NULL)::int AS comped_households
                 `),
                 pool.query(
                     `SELECT action, COUNT(*)::int AS n FROM recipe_imports
@@ -160,6 +163,9 @@ async function overview(req, res, next) {
                 shares: t.shares,
                 households: t.households,
                 multiMemberHouseholds: t.multi_member,
+                premiumHouseholds: t.premium_households,
+                paidHouseholds: t.paid_households,
+                compedHouseholds: t.comped_households,
                 aiCalls: ai,
                 invitesSent: inv.sent,
                 invitesAccepted: inv.accepted,
@@ -189,6 +195,8 @@ async function users(req, res, next) {
                 u."emailVerified" AS email_verified,
                 s.last_active, s.session_count,
                 hm.household_id, h.name AS household_name, hmc.member_count AS household_member_count,
+                h.plan AS household_plan,
+                (h.stripe_subscription_id IS NOT NULL) AS household_paid,
                 COALESCE(rc.recipe_count, 0)   AS recipe_count,
                 COALESCE(ai.import_count, 0)   AS ai_import,
                 COALESCE(ai.estimate_count, 0) AS ai_estimate,
@@ -248,6 +256,8 @@ async function users(req, res, next) {
                 household_id: r.household_id,
                 household_name: r.household_name,
                 household_member_count: Number(r.household_member_count),
+                plan: r.household_plan ?? "free",
+                paid: r.household_paid ?? false,
                 recipe_count: Number(r.recipe_count),
                 ai_usage: {
                     import: Number(r.ai_import),
