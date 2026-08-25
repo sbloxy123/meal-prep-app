@@ -2,9 +2,14 @@ const { Router } = require("express");
 const adminRouter = Router();
 const adminController = require("../controllers/adminController");
 
-// Read-only usage analytics for the /back-of-house dashboard. Mounted behind
-// requireAuth + requireAdmin in app.js.
+// Usage analytics + premium comps for the /back-of-house dashboard. Mounted
+// behind requireAuth + requireAdmin in app.js.
 adminRouter.get("/overview", adminController.overview);
 adminRouter.get("/users", adminController.users);
+
+// Premium grants: comp a household to premium (no Stripe), or revoke.
+adminRouter.get("/premium/comps", adminController.comps);
+adminRouter.post("/premium/grant", adminController.grantPremium);
+adminRouter.post("/premium/revoke", adminController.revokePremium);
 
 module.exports = adminRouter;
