@@ -40,9 +40,28 @@ async function getSharedRecipe(req, res, next) {
             })),
             prep_time_minutes: recipe.prep_time_minutes,
             cook_time_minutes: recipe.cook_time_minutes,
+            image_url: recipe.image_url,
             servings: recipe.servings,
             calories: recipe.calories,
+            protein_g: recipe.protein_g,
+            carb_g: recipe.carb_g,
+            fat_g: recipe.fat_g,
+            macros_source: recipe.macros_source,
         });
+    } catch (error) {
+        next(error);
+    }
+}
+
+// GET /shared-recipe/:token/meta — public (no auth) so social crawlers can build
+// the link unfurl. Deliberately minimal: only the title and image the owner is
+// already choosing to reveal via the share link. 404 for an unknown token.
+async function getSharedRecipeMeta(req, res, next) {
+    try {
+        const recipe = await db.getSharedRecipeByToken(req.params.token);
+        if (!recipe) return res.status(404).json({ error: "Shared recipe not found" });
+
+        res.json({ title: recipe.title, image_url: recipe.image_url });
     } catch (error) {
         next(error);
     }
@@ -110,4 +129,4 @@ async function saveSharedRecipe(req, res, next) {
     }
 }
 
-module.exports = { shareRecipe, getSharedRecipe, saveSharedRecipe };
+module.exports = { shareRecipe, getSharedRecipe, getSharedRecipeMeta, saveSharedRecipe };

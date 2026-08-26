@@ -47,6 +47,13 @@ const { requireAdmin } = require("./middleware/requireAdmin");
 
 app.use("/shopping-list", requireAuth, shoppingListRouter);
 app.use("/recipes", requireAuth, recipesRouter);
+// Public before the auth-guarded mount: exact path matches first (registration
+// order), so crawlers can read a shared recipe's title/image for the link unfurl
+// without a session. Everything else under /shared-recipe stays auth-guarded.
+app.get(
+    "/shared-recipe/:token/meta",
+    require("./controllers/recipeShareController").getSharedRecipeMeta,
+);
 app.use("/shared-recipe", requireAuth, sharedRecipeRouter);
 app.use("/generated-shopping-list", requireAuth, generatedShoppingListRouter);
 app.use("/household", requireAuth, householdRouter);
