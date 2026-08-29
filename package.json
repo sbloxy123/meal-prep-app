@@ -15,9 +15,9 @@
     },
     "dependencies": {
         "@anthropic-ai/sdk": "^0.80.0",
-        "@better-auth/stripe": "^1.7.1",
+        "@better-auth/stripe": "1.6.29",
         "bcryptjs": "^3.0.3",
-        "better-auth": "^1.6.29",
+        "better-auth": "1.6.29",
         "cheerio": "^1.2.0",
         "cloudinary": "^2.10.1",
         "cors": "^2.8.6",
@@ -32,5 +32,12 @@
         "resend": "^4.0.0",
         "stripe": "^22.5.0",
         "zod": "^4.3.6"
+    },
+    "comments": {
+        "better-auth-pin": "better-auth + @better-auth/stripe are pinned to an exact, mutually-compatible 1.6.29 (not ^) and hard-pinned via overrides. @better-auth/stripe@1.7.1 peer-requires better-auth ^1.7.1, so a floating range let Railway's npm upgrade better-auth to 1.7.x on deploy — whose account schema (issuer column) the DB doesn't have, breaking sign-in/reset. Do NOT loosen without migrating the DB for the target version's schema."
+    },
+    "overrides": {
+        "better-auth": "1.6.29",
+        "@better-auth/core": "1.6.29"
     }
 }
