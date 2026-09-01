@@ -43,7 +43,7 @@ async function createShoppingList(req, res, next) {
 async function getShoppingList(req, res, next) {
     try {
         const householdId = req.householdId;
-        const [shoppingList, allRecipesOnMenu, singleRecipeIngredients, singleRecipeTags, allTags, shoppingListIngredientsByRecipe, householdMemberCount, allowance] =
+        const [shoppingList, allRecipesOnMenu, singleRecipeIngredients, singleRecipeTags, allTags, shoppingListIngredientsByRecipe, householdMemberCount, allowance, onboarding] =
             await Promise.all([
                 db.getShoppingListItems(householdId),
                 db.allRecipesOnMenu(householdId),
@@ -53,6 +53,7 @@ async function getShoppingList(req, res, next) {
                 db.getShoppingListIngredientsByRecipe(householdId),
                 db.getHouseholdMemberCount(householdId),
                 db.checkWeeklyAllowance(householdId),
+                db.getOnboardingState(householdId, req.user.id),
             ]);
 
         res.json({
@@ -68,6 +69,12 @@ async function getShoppingList(req, res, next) {
             aiUsedThisWeek: allowance.used,
             aiWeeklyLimit: allowance.limit,
             weekResetsAt: allowance.resetsAt,
+            // Onboarding questionnaire state — this response is the app's one
+            // "chrome" fetch, so the wizard's trigger rides it for free.
+            onboardingNeeded: onboarding != null && onboarding.onboarded_at == null && !onboarding.has_recipes,
+            onboardingOutcome: onboarding?.onboarding_outcome ?? null,
+            foodPrefs: onboarding?.food_prefs ?? null,
+            dietaryRule: onboarding?.dietary_rule ?? null,
         });
     } catch (error) {
         next(error);

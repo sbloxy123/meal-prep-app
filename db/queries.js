@@ -633,6 +633,77 @@ async function renameHousehold(householdId, name) {
     await pool.query("UPDATE household SET name = $1 WHERE id = $2", [name, householdId]);
 }
 
+// ========= ONBOARDING + FOOD PREFERENCES ========= //
+
+// Everything GET /shopping-list needs to decide whether to show the
+// questionnaire, in one round trip. has_recipes keeps the "empty account"
+// check server-side, where it's a cheap indexed EXISTS.
+async function getOnboardingState(householdId, userId) {
+    const { rows } = await pool.query(
+        `SELECT hm.onboarded_at, hm.onboarding_outcome, hm.food_prefs, h.dietary_rule,
+                EXISTS (SELECT 1 FROM recipes r WHERE r.household_id = hm.household_id)
+                    AS has_recipes
+         FROM household_member hm
+         JOIN household h ON h.id = hm.household_id
+         WHERE hm.household_id = $1 AND hm.user_id = $2`,
+        [householdId, userId],
+    );
+    return rows[0] ?? null;
+}
+
+// End of the questionnaire (completed or skipped). food_prefs is only
+// overwritten when prefs were actually given — a skip must not wipe an
+// answer saved earlier in the flow.
+async function setMemberOnboarding(householdId, userId, { prefs, outcome }) {
+    await pool.query(
+        `UPDATE household_member
+         SET food_prefs = COALESCE($3, food_prefs),
+             onboarded_at = now(),
+             onboarding_outcome = $4
+         WHERE household_id = $1 AND user_id = $2`,
+        [householdId, userId, prefs ? JSON.stringify(prefs) : null, outcome],
+    );
+}
+
+// Account edits (and the wizard's step-3 save): preferences only, no
+// onboarding side effects.
+async function setMemberFoodPrefs(householdId, userId, prefs) {
+    await pool.query(
+        `UPDATE household_member SET food_prefs = $3
+         WHERE household_id = $1 AND user_id = $2`,
+        [householdId, userId, JSON.stringify(prefs)],
+    );
+}
+
+// First-writer/self-writer guard: the household-wide rule can be set when none
+// exists, or changed by whoever set it. Returns whether the write landed so
+// the caller can tell the user when it didn't.
+async function setHouseholdDietaryRule(householdId, rule, userId) {
+    const { rowCount } = await pool.query(
+        `UPDATE household SET dietary_rule = $2
+         WHERE id = $1 AND (dietary_rule IS NULL OR dietary_rule->>'setBy' = $3)`,
+        [householdId, rule ? JSON.stringify(rule) : null, userId],
+    );
+    return rowCount > 0;
+}
+
+// What the AI suggestion endpoints personalise from: the household-wide rule
+// plus every member's own answers — suggestions feed the whole kitchen, not
+// just whoever tapped the button.
+async function getSuggestContext(householdId) {
+    const [householdRes, membersRes] = await Promise.all([
+        pool.query("SELECT dietary_rule FROM household WHERE id = $1", [householdId]),
+        pool.query(
+            "SELECT user_id, food_prefs FROM household_member WHERE household_id = $1",
+            [householdId],
+        ),
+    ]);
+    return {
+        dietaryRule: householdRes.rows[0]?.dietary_rule ?? null,
+        memberPrefs: membersRes.rows.map((r) => r.food_prefs).filter(Boolean),
+    };
+}
+
 async function getPendingInvites(householdId) {
     const { rows } = await pool.query(
         `SELECT id, invited_email, created_at, expires_at
@@ -995,6 +1066,11 @@ module.exports = {
     getMemberRole,
     getHouseholdMemberCount,
     renameHousehold,
+    getOnboardingState,
+    setMemberOnboarding,
+    setMemberFoodPrefs,
+    setHouseholdDietaryRule,
+    getSuggestContext,
     getPendingInvites,
     createInvite,
     revokeInvite,
