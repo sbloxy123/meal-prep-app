@@ -120,19 +120,32 @@ async function renameHousehold(req, res, next) {
 }
 
 // Shared by both preference writes: save the caller's own prefs, then apply
-// (or clear) the household-wide rule. The rule is guarded first-writer/
-// self-writer in SQL, so a newly joined member can't silently overwrite an
-// established household's rule — we report whether it landed instead of 403ing.
+// (or clear) the household-wide rule.
+//
+// The kitchen-wide rule is owner-only. Anyone can record their own dietary
+// needs, but a rule that constrains every suggestion for everyone is the
+// owner's call — and it stops a member setting one by mistake. A non-owner
+// still gets their answers saved; we report householdRuleApplied: false so the
+// UI can say why the wider setting didn't stick, rather than 403ing a request
+// that did do most of what was asked.
 async function applyPrefs(req, prefs) {
     await db.setMemberFoodPrefs(req.householdId, req.user.id, prefs);
-    if (prefs.scope === "everyone" && prefs.diets.length > 0) {
-        const rule = { v: 1, diets: prefs.diets, setBy: req.user.id };
-        return db.setHouseholdDietaryRule(req.householdId, rule, req.user.id);
+
+    const isOwner = (await db.getMemberRole(req.householdId, req.user.id)) === "owner";
+    const wantsRule = prefs.scope === "everyone" && prefs.diets.length > 0;
+    if (!isOwner) return false;
+
+    if (wantsRule) {
+        await db.setHouseholdDietaryRule(req.householdId, {
+            v: 1,
+            diets: prefs.diets,
+            setBy: req.user.id,
+        });
+        return true;
     }
-    // Scope moved off "everyone": clear the rule if the caller set it, so a
-    // stale kitchen-wide restriction doesn't outlive its author's answer.
-    // The same guarded UPDATE handles "no rule exists" as a no-op.
-    await db.setHouseholdDietaryRule(req.householdId, null, req.user.id);
+    // Owner moved their scope off "everyone": clear the rule so a stale
+    // kitchen-wide restriction can't outlive the answer that created it.
+    await db.setHouseholdDietaryRule(req.householdId, null);
     return false;
 }
 
