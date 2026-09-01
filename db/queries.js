@@ -675,16 +675,16 @@ async function setMemberFoodPrefs(householdId, userId, prefs) {
     );
 }
 
-// First-writer/self-writer guard: the household-wide rule can be set when none
-// exists, or changed by whoever set it. Returns whether the write landed so
-// the caller can tell the user when it didn't.
-async function setHouseholdDietaryRule(householdId, rule, userId) {
-    const { rowCount } = await pool.query(
-        `UPDATE household SET dietary_rule = $2
-         WHERE id = $1 AND (dietary_rule IS NULL OR dietary_rule->>'setBy' = $3)`,
-        [householdId, rule ? JSON.stringify(rule) : null, userId],
-    );
-    return rowCount > 0;
+// Set or clear the household-wide dietary rule. Authorisation is the caller's
+// owner role, checked in the controller — deliberately NOT a "only whoever set
+// it may change it" guard here, because ownership transfers when an owner
+// leaves (see leaveHousehold), which would otherwise lock the new owner out of
+// a rule the departed owner set.
+async function setHouseholdDietaryRule(householdId, rule) {
+    await pool.query("UPDATE household SET dietary_rule = $2 WHERE id = $1", [
+        householdId,
+        rule ? JSON.stringify(rule) : null,
+    ]);
 }
 
 // What the AI suggestion endpoints personalise from: the household-wide rule
