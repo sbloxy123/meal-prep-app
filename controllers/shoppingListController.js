@@ -71,7 +71,18 @@ async function getShoppingList(req, res, next) {
             weekResetsAt: allowance.resetsAt,
             // Onboarding questionnaire state — this response is the app's one
             // "chrome" fetch, so the wizard's trigger rides it for free.
-            onboardingNeeded: onboarding != null && onboarding.onboarded_at == null && !onboarding.has_recipes,
+            //
+            // 'pre_existing' means "was already using the app when onboarding
+            // shipped", not a choice the user made, so it doesn't count as
+            // having answered: an account that empties its recipe list still
+            // qualifies. Only a real 'completed' or 'skipped' outcome stops the
+            // questionnaire being offered again — which is what keeps "Reset
+            // recipes" from ambushing someone who already said no.
+            onboardingNeeded:
+                onboarding != null &&
+                (onboarding.onboarded_at == null ||
+                    onboarding.onboarding_outcome === "pre_existing") &&
+                !onboarding.has_recipes,
             onboardingOutcome: onboarding?.onboarding_outcome ?? null,
             foodPrefs: onboarding?.food_prefs ?? null,
             dietaryRule: onboarding?.dietary_rule ?? null,

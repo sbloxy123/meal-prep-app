@@ -13,8 +13,12 @@
 --
 -- onboarded_at is the "don't ask again" marker; onboarding_outcome is the
 -- funnel dimension. 'pre_existing' is the backfill value for members whose
--- household already had recipes when this shipped — they are not in the funnel
--- and must never be shown the questionnaire (including after "Reset recipes").
+-- household already had recipes when this shipped: they are not in the funnel
+-- and aren't shown the questionnaire while they have recipes. It records
+-- "was already using the app", NOT an answer — so if such an account later
+-- empties its recipe list it does qualify again (see the onboardingNeeded rule
+-- in controllers/shoppingListController.js). Only a real 'completed' or
+-- 'skipped' outcome settles it for good.
 
 ALTER TABLE household_member
     ADD COLUMN IF NOT EXISTS food_prefs         JSONB,
