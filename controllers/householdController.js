@@ -1,6 +1,7 @@
 const crypto = require("crypto");
 const db = require("../db/queries");
 const { sendEmail, actionEmail } = require("../lib/email");
+const { parsePrefs } = require("../lib/dietary");
 
 // Build invite links against the frontend origin (the browser hits the app,
 // which proxies /backend + /api/auth back here).
@@ -118,6 +119,54 @@ async function renameHousehold(req, res, next) {
     }
 }
 
+// Shared by both preference writes: save the caller's own prefs, then apply
+// (or clear) the household-wide rule. The rule is guarded first-writer/
+// self-writer in SQL, so a newly joined member can't silently overwrite an
+// established household's rule — we report whether it landed instead of 403ing.
+async function applyPrefs(req, prefs) {
+    await db.setMemberFoodPrefs(req.householdId, req.user.id, prefs);
+    if (prefs.scope === "everyone" && prefs.diets.length > 0) {
+        const rule = { v: 1, diets: prefs.diets, setBy: req.user.id };
+        return db.setHouseholdDietaryRule(req.householdId, rule, req.user.id);
+    }
+    // Scope moved off "everyone": clear the rule if the caller set it, so a
+    // stale kitchen-wide restriction doesn't outlive its author's answer.
+    // The same guarded UPDATE handles "no rule exists" as a no-op.
+    await db.setHouseholdDietaryRule(req.householdId, null, req.user.id);
+    return false;
+}
+
+// PUT /household/dietary — preference edits from Account, and the wizard's
+// step-3 save. No onboarding side effects.
+async function saveDietary(req, res, next) {
+    try {
+        const prefs = parsePrefs(req.body);
+        if (!prefs) return res.status(400).json({ error: "Nothing to save." });
+        const householdRuleApplied = await applyPrefs(req, prefs);
+        res.json({ success: true, householdRuleApplied });
+    } catch (error) {
+        next(error);
+    }
+}
+
+// PUT /household/onboarding — the questionnaire finishing (completed) or being
+// explicitly skipped. Idempotent: plain UPDATEs, safe to retry.
+async function saveOnboarding(req, res, next) {
+    try {
+        const outcome = req.body?.outcome;
+        if (outcome !== "completed" && outcome !== "skipped") {
+            return res.status(400).json({ error: "Bad outcome." });
+        }
+        const prefs = parsePrefs(req.body); // null is fine — a step-1 skip has no answers
+        await db.setMemberOnboarding(req.householdId, req.user.id, { prefs, outcome });
+        let householdRuleApplied = false;
+        if (prefs) householdRuleApplied = await applyPrefs(req, prefs);
+        res.json({ success: true, householdRuleApplied });
+    } catch (error) {
+        next(error);
+    }
+}
+
 async function revokeInvite(req, res, next) {
     try {
         if ((await db.getMemberRole(req.householdId, req.user.id)) !== "owner") {
@@ -138,4 +187,6 @@ module.exports = {
     removeMember,
     renameHousehold,
     revokeInvite,
+    saveDietary,
+    saveOnboarding,
 };

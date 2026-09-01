@@ -27,7 +27,7 @@ async function overview(req, res, next) {
         let days = parseInt(req.query.days, 10);
         if (!ALLOWED_DAYS.includes(days)) days = 30;
 
-        const [totalsRes, aiRes, invitesRes, macrosRes, tagsRes, deviceRes] =
+        const [totalsRes, aiRes, invitesRes, macrosRes, tagsRes, deviceRes, onboardingRes] =
             await Promise.all([
                 pool.query(`
                     SELECT
@@ -73,6 +73,20 @@ async function overview(req, res, next) {
                         COUNT(DISTINCT "userId")::int AS n
                     FROM "session" WHERE "userAgent" IS NOT NULL GROUP BY device
                 `),
+                pool.query(
+                    `SELECT
+                        COUNT(*) FILTER (WHERE type = 'onboarding_shown')::int      AS shown,
+                        COUNT(*) FILTER (WHERE type = 'onboarding_started')::int    AS started,
+                        COUNT(*) FILTER (WHERE type = 'onboarding_completed')::int  AS completed,
+                        COUNT(*) FILTER (WHERE type = 'onboarding_skipped')::int    AS skipped,
+                        COUNT(*) FILTER (WHERE type = 'onboarding_ai_handoff')::int AS ai_handoff,
+                        COALESCE(SUM((meta->>'added')::int)
+                            FILTER (WHERE type = 'onboarding_completed'), 0)::int   AS recipes_seeded
+                     FROM app_events
+                     WHERE created_at >= now() - ($1::int || ' days')::interval
+                       AND type LIKE 'onboarding_%'`,
+                    [days],
+                ),
             ]);
 
         const t = totalsRes.rows[0];
@@ -91,7 +105,17 @@ async function overview(req, res, next) {
 
         const inv = invitesRes.rows[0];
 
-        const [signups, activeUsers, aiCallsRows, recipesCreated, listsGenerated, weekAdds] =
+        const ob = onboardingRes.rows[0];
+        const onboarding = {
+            shown: Number(ob.shown),
+            started: Number(ob.started),
+            completed: Number(ob.completed),
+            skipped: Number(ob.skipped),
+            aiHandoff: Number(ob.ai_handoff),
+            recipesSeeded: Number(ob.recipes_seeded),
+        };
+
+        const [signups, activeUsers, aiCallsRows, recipesCreated, listsGenerated, weekAdds, onboardingCompleted] =
             await Promise.all([
                 daySeries(
                     days,
@@ -138,6 +162,13 @@ async function overview(req, res, next) {
                         ON e.created_at::date = d.d AND e.type = 'week_add'
                      GROUP BY d.d ORDER BY d.d`,
                 ),
+                daySeries(
+                    days,
+                    `SELECT d.d::text AS date, COUNT(e.id)::int AS count
+                     FROM days d LEFT JOIN app_events e
+                        ON e.created_at::date = d.d AND e.type = 'onboarding_completed'
+                     GROUP BY d.d ORDER BY d.d`,
+                ),
             ]);
 
         const aiCalls = aiCallsRows.rows.map((r) => ({
@@ -170,11 +201,12 @@ async function overview(req, res, next) {
                 invitesSent: inv.sent,
                 invitesAccepted: inv.accepted,
                 invitesPending: inv.pending,
+                onboarding,
                 macrosSource,
                 topTags: tagsRes.rows.map((r) => ({ name: r.name, count: Number(r.n) })),
                 deviceSplit,
             },
-            series: { signups, activeUsers, aiCalls, recipesCreated, listsGenerated, weekAdds },
+            series: { signups, activeUsers, aiCalls, recipesCreated, listsGenerated, weekAdds, onboardingCompleted },
             generated_at: new Date().toISOString(),
         });
     } catch (error) {
