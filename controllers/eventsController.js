@@ -15,6 +15,11 @@ const ALLOWED = new Set([
     "onboarding_skipped",
     "onboarding_ai_handoff",
     "onboarding_completed",
+    // Intent: they typed dishes on the "what do you cook most?" step. The
+    // server logs onboarding_usuals separately for what was actually written —
+    // the ratio between the two is the drop-off. Keep the names distinct: the
+    // usuals fair-use counter counts onboarding_usuals only.
+    "onboarding_usuals_typed",
 ]);
 
 const num = (v) => (Number.isFinite(v) ? Math.trunc(v) : undefined);
@@ -36,12 +41,16 @@ function cleanMeta(type, raw) {
     if (type === "onboarding_ai_handoff" || type === "onboarding_completed") {
         set("diets", list(m.diets, DIETS));
     }
+    if (type === "onboarding_usuals_typed") set("dishes", num(m.dishes));
     if (type === "onboarding_completed") {
         set("offered", num(m.offered));
         set("chosen", num(m.chosen));
         set("added", num(m.added));
         set("scope", str(m.scope, 10));
         set("proteins", list(m.proteins, PROTEINS));
+        set("usuals", num(m.usuals));
+        set("usuals_written", num(m.usualsWritten));
+        set("usuals_title_only", num(m.usualsTitleOnly));
     }
 
     if (Object.keys(out).length === 0) return null;

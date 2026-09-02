@@ -31,6 +31,20 @@ const PHOTO_LIMIT = 15;
 const IMPROVE_LIMIT = 15;
 const SOCIAL_LIMIT = 20;
 const SUGGEST_LIMIT = 15;
+// "What do you cook most?" — the onboarding step where someone types their own
+// go-to meals and we write them up. Deliberately NOT metered against the weekly
+// AI pool (see generateUsuals), so it carries its own fair-use bound instead.
+const USUALS_MAX_DISHES = 10;
+const USUALS_MAX_TITLE_LEN = 80;
+// The first concurrent Anthropic work in this codebase. Four keeps us well
+// inside org rate limits while doing ten dishes in three waves (~12-18s).
+const USUALS_CONCURRENCY = 4;
+const USUALS_CALL_TIMEOUT_MS = 25_000;
+// Past this, remaining dishes skip the AI and land as title-only recipes rather
+// than turning one request into a minute-plus wait.
+const USUALS_TOTAL_BUDGET_MS = 45_000;
+const USUALS_RUNS_PER_DAY = 3;
+const USUALS_TAG = "My usuals";
 // How many ideas we ask for per "Give me inspiration" call.
 const SUGGEST_COUNT = 6;
 // Keep the free-text steer short — it's a nudge, not a document.
@@ -797,6 +811,305 @@ Give realistic quantities in the ingredient names and estimate the per-serving m
     }
 }
 
+// ---------- "My usuals" — the onboarding go-to meals step ----------
+
+// A new user types the meals they actually cook, in their own words, and we
+// write each one up as a proper recipe. This is the ownership moment in
+// onboarding, so two things are deliberate:
+//
+//   1. It is FREE. We never call recordImport — getWeeklyAiUsage counts every
+//      recipe_imports row for the household regardless of `action`, so logging
+//      there would charge ten of their fifteen weekly actions during onboarding.
+//      Fair use is bounded by a per-household daily run counter instead.
+//   2. We do NOT apply the household's dietary answers. Someone who ticked
+//      vegetarian for one member and typed "spag bol" means the beef one they've
+//      cooked for years; handing back a substitute they didn't ask for is
+//      exactly the "our food, not yours" failure this step exists to fix. Diet
+//      governs the starter recipes *we* choose, which is the right place for it.
+
+// Households currently generating, so two requests in flight can't both pass the
+// daily check (recordEvent is fire-and-forget and written after the work).
+const usualsInFlight = new Set();
+
+function usualsPrompt(dish) {
+    return `You are a recipe writer for a UK home-cooking app. A user has typed the name of a meal they cook regularly, in their own words. Write that meal up as a proper recipe.
+
+What they typed: "${dish}"
+
+Their words may be shorthand, regional or affectionate ("spag bol" = spaghetti bolognese, "mac n cheese" = macaroni cheese, "mum's lasagne" = lasagne). Work out which dish they mean and write a sensible, common-sense version of it. Assume UK ingredients and measurements, and a family of four, unless their words say otherwise.
+
+Keep their own words as the "title" where they read like a name for the dish (e.g. "Mum's Lasagne"), but expand obvious shorthand into the real dish name (e.g. "spag bol" -> "Spaghetti Bolognese"). Capitalise it properly.
+
+If you genuinely cannot tell what dish they mean, return {"unknown": true} and nothing else. Do not invent an unrelated recipe.
+
+Return ONLY valid raw JSON (no markdown, no code fences) in EXACTLY this shape:
+{
+  "title": string,
+  "canonical_dish": string,            // the plain generic name, lower case, no
+                                       // possessives or adjectives, e.g. "lasagne"
+  "description": string | null,
+  "instructions": string,              // steps joined by newline characters
+  "ingredients": [ { "name": string, "quantity": "", "unit": "" } ],
+  "prep_time_minutes": number | null,
+  "cook_time_minutes": number | null,
+  "servings": number | null,
+  "calories": number | null,           // per serving, kcal
+  "protein_g": number | null,          // per serving, grams
+  "carb_g": number | null,             // per serving, grams
+  "fat_g": number | null               // per serving, grams
+}
+Each ingredient "name" is the full line (e.g. "500g beef mince"); leave quantity and unit as empty strings.
+Give realistic quantities in the ingredient names and estimate the per-serving macros.`;
+}
+
+// Clean, de-duplicate and cap what the client sent. Newlines and backticks are
+// stripped so a dish name can't restructure the prompt; the length cap bounds
+// the rest. Forgiving rather than rejecting — an over-long array means a stale
+// client, not an attack.
+function parseDishes(raw) {
+    const list = Array.isArray(raw) ? raw : [];
+    const seen = new Set();
+    const dishes = [];
+    for (const entry of list) {
+        if (typeof entry !== "string") continue;
+        const clean = entry
+            .replace(/[\r\n`]+/g, " ")
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, USUALS_MAX_TITLE_LEN);
+        if (!clean) continue;
+        const key = clean.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        dishes.push(clean);
+    }
+    return dishes;
+}
+
+// Run `worker` over items with a bounded number in flight, preserving order.
+async function runPool(items, limit, worker) {
+    const out = new Array(items.length);
+    let cursor = 0;
+    const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+        for (let i = cursor++; i < items.length; i = cursor++) {
+            out[i] = await worker(items[i], i);
+        }
+    });
+    // The worker never throws (each dish is wrapped), but a bug in it must not
+    // lose the other nine dishes.
+    await Promise.allSettled(runners);
+    return out;
+}
+
+// AI draft -> the shape db.createRecipe wants. Mirrors the transform in
+// recipeShareController, with one addition that matters (see quantity below).
+function usualsToCreateData(input, data) {
+    if (!data) {
+        // Title-only: whatever they typed still lands in their list, tagged the
+        // same, so nothing they wrote is lost. title/description/instructions
+        // are all nullable.
+        const title = input.charAt(0).toUpperCase() + input.slice(1);
+        return {
+            recipe_title: title.slice(0, 255),
+            recipe_description: null,
+            recipe_instructions: null,
+            recipe_link_url: null,
+            prep_time_minutes: null,
+            cook_time_minutes: null,
+            ingredient_name: [],
+            ingredient_quantity: [],
+            ingredient_unit: [],
+            tags: [USUALS_TAG],
+            image_url: null,
+            image_public_id: null,
+            servings: null,
+            calories: null,
+            protein_g: null,
+            carb_g: null,
+            fat_g: null,
+            macros_source: null,
+        };
+    }
+
+    const ings = mapIngredients(
+        Array.isArray(data.ingredients)
+            ? data.ingredients.map((i) => (typeof i === "string" ? i : i?.name))
+            : [],
+    ).slice(0, 40);
+    const nutrition = mapNutrition({
+        calories: data.calories,
+        proteinContent: data.protein_g,
+        carbohydrateContent: data.carb_g,
+        fatContent: data.fat_g,
+    });
+    // recipes.calories is INTEGER; the others are unconstrained NUMERIC. A wild
+    // model value would overflow and, because createRecipe swallows its error,
+    // silently lose the whole recipe.
+    const calories =
+        nutrition.calories != null && nutrition.calories >= 0 && nutrition.calories < 100_000
+            ? nutrition.calories
+            : null;
+
+    return {
+        recipe_title: String(data.title).slice(0, 255),
+        recipe_description: data.description || null,
+        recipe_instructions:
+            typeof data.instructions === "string"
+                ? data.instructions
+                : flattenInstructions(data.instructions).join("\n"),
+        recipe_link_url: null,
+        prep_time_minutes: firstInt(data.prep_time_minutes),
+        cook_time_minutes: firstInt(data.cook_time_minutes),
+        ingredient_name: ings.map((i) => i.name),
+        // recipe_ingredients.quantity is numeric(6,2) and mapIngredients always
+        // emits "". Passing "" to a numeric parameter throws — the HTTP path
+        // only survives because recipe.schema.js coerces "" to 0. Calling
+        // createRecipe directly we have to do it ourselves, and null is right
+        // here: on this path the amounts live in the ingredient name.
+        ingredient_quantity: ings.map(() => null),
+        ingredient_unit: ings.map(() => ""),
+        tags: [USUALS_TAG],
+        image_url: null,
+        image_public_id: null,
+        servings: firstInt(data.servings),
+        calories,
+        protein_g: nutrition.protein_g,
+        carb_g: nutrition.carb_g,
+        fat_g: nutrition.fat_g,
+        macros_source: nutrition.found ? "estimated" : null,
+    };
+}
+
+async function generateUsuals(req, res, next) {
+    const householdId = req.householdId;
+    try {
+        const dishes = parseDishes(req.body?.dishes);
+        const use = dishes.slice(0, USUALS_MAX_DISHES);
+        if (use.length === 0) {
+            return res.status(400).json({ error: "Type at least one dish" });
+        }
+
+        if (usualsInFlight.has(householdId)) {
+            return res.status(429).json({
+                error: "USUALS_LIMIT",
+                message: "We're still writing your last batch — give it a moment.",
+            });
+        }
+        const runs = await db.countRecentEvents("onboarding_usuals", householdId);
+        if (runs >= USUALS_RUNS_PER_DAY) {
+            return res.status(429).json({
+                error: "USUALS_LIMIT",
+                message:
+                    "You've already done this a few times today. You can still add recipes one at a time from Add recipe.",
+            });
+        }
+        usualsInFlight.add(householdId);
+
+        const startedAt = Date.now();
+
+        async function draftDish(dish) {
+            if (Date.now() - startedAt > USUALS_TOTAL_BUDGET_MS) return null;
+            try {
+                const message = await client.messages.create(
+                    {
+                        model: AI_MODEL,
+                        max_tokens: 2048,
+                        messages: [{ role: "user", content: usualsPrompt(dish) }],
+                    },
+                    // Without these we inherit the client defaults (10 minutes,
+                    // 2 retries), which for parallel calls is a request that can
+                    // hang for minutes.
+                    { timeout: USUALS_CALL_TIMEOUT_MS, maxRetries: 1 },
+                );
+                const raw = stripFences(message.content[0].text);
+                let data;
+                try {
+                    data = JSON.parse(raw);
+                } catch {
+                    try {
+                        data = JSON.parse(jsonrepair(raw));
+                    } catch {
+                        return null;
+                    }
+                }
+                if (!data || data.unknown === true || !data.title) return null;
+                return data;
+            } catch (error) {
+                console.error(`[usuals] generation failed for ${JSON.stringify(dish)}:`, error.message);
+                return null;
+            }
+        }
+
+        let drafts;
+        try {
+            drafts = await runPool(use, USUALS_CONCURRENCY, draftDish);
+        } finally {
+            usualsInFlight.delete(householdId);
+        }
+
+        // Generate in parallel, write sequentially: the inserts are milliseconds,
+        // and serialising them keeps createSingleTag (read-then-insert, swallows
+        // its unique violation) from racing on the shared tag. Belt and braces,
+        // create the tag once up front too.
+        await db.createSingleTag(USUALS_TAG);
+
+        const results = [];
+        for (let i = 0; i < use.length; i++) {
+            const input = use[i];
+            const data = drafts[i] ?? null;
+            let recipeId = null;
+            try {
+                // createRecipe's own try only wraps its INSERT block — the
+                // ingredient/tag upserts before it can throw straight out.
+                recipeId = await db.createRecipe(
+                    usualsToCreateData(input, data),
+                    householdId,
+                    req.user.id,
+                );
+            } catch (error) {
+                console.error(`[usuals] createRecipe threw for ${JSON.stringify(input)}:`, error.message);
+            }
+            results.push({
+                input,
+                title: data?.title ? String(data.title).slice(0, 255) : input,
+                // Matching only — never stored. Lets the client spot that
+                // "mum's lasagne" and our "Oven Lasagne…" are the same dish.
+                canonical:
+                    typeof data?.canonical_dish === "string" ? data.canonical_dish.toLowerCase() : null,
+                recipeId: recipeId ?? null,
+                // createRecipe returns undefined when its insert failed, so a
+                // falsy id is the only failure signal we get.
+                status: !recipeId ? "failed" : data ? "written" : "title_only",
+            });
+        }
+
+        const counts = {
+            requested: use.length,
+            written: results.filter((r) => r.status === "written").length,
+            titleOnly: results.filter((r) => r.status === "title_only").length,
+            failed: results.filter((r) => r.status === "failed").length,
+            dropped: dishes.length - use.length,
+        };
+
+        db.recordEvent("onboarding_usuals", {
+            userId: req.user.id,
+            householdId,
+            meta: {
+                requested: counts.requested,
+                written: counts.written,
+                title_only: counts.titleOnly,
+                failed: counts.failed,
+                ms: Date.now() - startedAt,
+            },
+        });
+
+        res.json({ results, counts });
+    } catch (error) {
+        usualsInFlight.delete(householdId);
+        next(error);
+    }
+}
+
 // ---------- recipe inspiration (A2) ----------
 
 // Normalise one raw suggestion from the model into { title, tags[], ingredients[] }
@@ -1343,6 +1656,7 @@ module.exports = {
     estimateMacros,
     improveRecipe,
     generateFromTitle,
+    generateUsuals,
     suggestRecipes,
     parseFromPhoto,
     importSocial,

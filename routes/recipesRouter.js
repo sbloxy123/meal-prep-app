@@ -12,6 +12,10 @@ recipesRouter.post("/", recipesController.createRecipe);
 // id. All rate-limited per household (see recipeImportController).
 recipesRouter.post("/import", recipeImportController.importRecipe);
 recipesRouter.post("/generate-from-title", recipeImportController.generateFromTitle);
+// Onboarding "what do you cook most?" — a list of dish names the user typed,
+// written up as full recipes. Not metered against the weekly pool; it has its
+// own daily fair-use bound.
+recipesRouter.post("/usuals", recipeImportController.generateUsuals);
 // "Give me inspiration" — N suggested recipe ideas (title/tags/ingredients).
 recipesRouter.post("/suggest", recipeImportController.suggestRecipes);
 recipesRouter.post("/estimate-macros", recipeImportController.estimateMacros);
