@@ -170,6 +170,13 @@ async function createRecipe(data, householdId, userId) {
 }
 
 async function deleteRecipe(recipeId, householdId) {
+    // Clear the shopping list first. Deleting the recipe cascades its
+    // shopping_list_recipes links away, but the shopping_list rows themselves
+    // have no foreign key to cascade from — so without this they'd be stranded
+    // on the list with no recipe behind them. Ordering matters: once the links
+    // are gone there is no way to tell which items were this recipe's.
+    await clearRecipeFromShoppingList(recipeId, householdId);
+
     await pool.query("DELETE FROM recipes WHERE id = $1 AND household_id = $2", [
         recipeId,
         householdId,
@@ -474,6 +481,34 @@ async function checkForDuplicateIngredients(recipeIngredient) {
     return parseInt(ingredientCount.rows[0].count);
 }
 
+// Drops a recipe's ingredients from the shopping list, keeping any item a
+// second recipe still needs. Shared by "remove from this week" and by deleting
+// the recipe outright: shopping_list rows carry no foreign key to the recipe
+// (they're keyed by ingredient name), so nothing cascades and this is the only
+// thing that clears them. Must run before the shopping_list_recipes links go,
+// since the duplicate check counts them.
+async function clearRecipeFromShoppingList(recipeId, householdId) {
+    const { rows: recipesShoppingListItemIdsRows } = await pool.query(
+        "SELECT shopping_list_id FROM shopping_list_recipes WHERE recipe_id = $1",
+        [recipeId],
+    );
+    for (const row of recipesShoppingListItemIdsRows) {
+        const ingredientCount = await checkForDuplicateIngredients(
+            row.shopping_list_id,
+        );
+        if (ingredientCount < 2) {
+            await pool.query(
+                "DELETE FROM shopping_list WHERE id = $1 AND household_id = $2",
+                [row.shopping_list_id, householdId],
+            );
+        }
+    }
+
+    await pool.query("DELETE FROM shopping_list_recipes WHERE recipe_id = $1;", [
+        recipeId,
+    ]);
+}
+
 async function removeRecipeFromShoppingList(recipeId, householdId) {
     try {
         await pool.query(
@@ -481,26 +516,7 @@ async function removeRecipeFromShoppingList(recipeId, householdId) {
             [recipeId, householdId],
         );
 
-        const { rows: recipesShoppingListItemIdsRows } = await pool.query(
-            "SELECT shopping_list_id FROM shopping_list_recipes WHERE recipe_id = $1",
-            [recipeId],
-        );
-        for (const row of recipesShoppingListItemIdsRows) {
-            const ingredientCount = await checkForDuplicateIngredients(
-                row.shopping_list_id,
-            );
-            if (ingredientCount < 2) {
-                await pool.query(
-                    "DELETE FROM shopping_list WHERE id = $1 AND household_id = $2",
-                    [row.shopping_list_id, householdId],
-                );
-            }
-        }
-
-        await pool.query(
-            "DELETE FROM shopping_list_recipes WHERE recipe_id = $1;",
-            [recipeId],
-        );
+        await clearRecipeFromShoppingList(recipeId, householdId);
     } catch (error) {
         console.error(error);
         throw error;
