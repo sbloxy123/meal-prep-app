@@ -81,7 +81,15 @@ async function overview(req, res, next) {
                         COUNT(*) FILTER (WHERE type = 'onboarding_skipped')::int    AS skipped,
                         COUNT(*) FILTER (WHERE type = 'onboarding_ai_handoff')::int AS ai_handoff,
                         COALESCE(SUM((meta->>'added')::int)
-                            FILTER (WHERE type = 'onboarding_completed'), 0)::int   AS recipes_seeded
+                            FILTER (WHERE type = 'onboarding_completed'), 0)::int   AS recipes_seeded,
+                        COUNT(*) FILTER (WHERE type = 'onboarding_usuals_typed')::int AS usuals_typed,
+                        COUNT(*) FILTER (WHERE type = 'onboarding_usuals')::int       AS usuals_runs,
+                        COALESCE(SUM((meta->>'requested')::int)
+                            FILTER (WHERE type = 'onboarding_usuals'), 0)::int       AS usuals_dishes,
+                        COALESCE(SUM((meta->>'written')::int)
+                            FILTER (WHERE type = 'onboarding_usuals'), 0)::int       AS usuals_written,
+                        COALESCE(SUM((meta->>'title_only')::int)
+                            FILTER (WHERE type = 'onboarding_usuals'), 0)::int       AS usuals_title_only
                      FROM app_events
                      WHERE created_at >= now() - ($1::int || ' days')::interval
                        AND type LIKE 'onboarding_%'`,
@@ -113,6 +121,11 @@ async function overview(req, res, next) {
             skipped: Number(ob.skipped),
             aiHandoff: Number(ob.ai_handoff),
             recipesSeeded: Number(ob.recipes_seeded),
+            usualsTyped: Number(ob.usuals_typed),
+            usualsRuns: Number(ob.usuals_runs),
+            usualsDishes: Number(ob.usuals_dishes),
+            usualsWritten: Number(ob.usuals_written),
+            usualsTitleOnly: Number(ob.usuals_title_only),
         };
 
         const [signups, activeUsers, aiCallsRows, recipesCreated, listsGenerated, weekAdds, onboardingCompleted] =

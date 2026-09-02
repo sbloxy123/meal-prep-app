@@ -1058,6 +1058,20 @@ async function recordEvent(type, { userId = null, householdId = null, meta = nul
     }
 }
 
+// How many of an event a household has logged recently. Used as a fair-use
+// bound for work that deliberately isn't metered against the weekly AI pool
+// (recipe_imports counts every row regardless of action, so recording there
+// would charge the user).
+async function countRecentEvents(type, householdId, interval = "24 hours") {
+    const { rows } = await pool.query(
+        `SELECT count(*)::int AS n FROM app_events
+         WHERE type = $1 AND household_id = $2
+           AND created_at >= now() - $3::interval`,
+        [type, householdId, interval],
+    );
+    return rows[0].n;
+}
+
 module.exports = {
     getHouseholdIdForUser,
     ensureHouseholdForUser,
@@ -1067,6 +1081,11 @@ module.exports = {
     getHouseholdMemberCount,
     renameHousehold,
     getOnboardingState,
+    // Exported so callers writing several recipes that share a tag can create it
+    // once up front — this function is read-then-insert, so concurrent callers
+    // race on tags.name UNIQUE, swallow the violation and return undefined.
+    createSingleTag,
+    countRecentEvents,
     setMemberOnboarding,
     setMemberFoodPrefs,
     setHouseholdDietaryRule,
