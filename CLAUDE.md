@@ -18,9 +18,10 @@ npm run migrate:down
 
 # Seed the database
 npm run seed
-```
 
-There are no tests configured.
+# Unit tests (node --test) — currently test/steps.test.js
+npm test
+```
 
 ## Environment Variables
 
@@ -143,6 +144,8 @@ Data is scoped by **household**, not by individual user, so family members can s
 - `POST /shopping-list/organise` — groups the shopping list into UK supermarket aisles; saves result to `generated_shopping_list`.
 - `POST /shopping-list/parse-ingredients` — parses raw pasted text into individual ingredient items.
 - Both use `jsonrepair` as a fallback when Claude returns slightly malformed JSON.
+
+**Method steps — `lib/steps.js`.** Every AI path that writes `recipes.instructions` (import, social, generate-from-title, improve, photo, My usuals) passes the model's answer through `normaliseSteps`, which turns an array, a newline string, or one paragraph of prose into one step per line. The prompts ask for an array of steps; normalisation is the safety net, not the mechanism. `validateDraft` normalises too — before that it read the field as a string, so an array counted as an empty method and forced the paid Sonnet escalation. `splitSentences` is a byte-for-byte twin of the frontend's display fallback in `src/lib/instructions.ts`; change them together.
 
 ## Database Schema
 

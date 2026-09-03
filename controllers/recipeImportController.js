@@ -6,6 +6,7 @@ const db = require("../db/queries");
 const { assertSafeUrl } = require("../lib/urlGuard");
 const { uploadFromUrl } = require("../lib/cloudinary");
 const { weeklyLimitReached } = require("../lib/aiAllowance");
+const { normaliseSteps } = require("../lib/steps");
 const {
     importUrlSchema,
     estimateMacrosSchema,
@@ -238,7 +239,7 @@ function extractFromJsonLd($) {
                 description: recipe.description,
                 imageUrl: extractImageUrl(recipe.image),
                 ingredients: mapIngredients(recipe.recipeIngredient),
-                instructions: flattenInstructions(recipe.recipeInstructions).join("\n"),
+                instructions: normaliseSteps(flattenInstructions(recipe.recipeInstructions).join("\n")),
                 prepTime: recipe.prepTime,
                 cookTime: recipe.cookTime,
                 nutrition: recipe.nutrition,
@@ -281,7 +282,7 @@ function extractFromMicrodata($) {
         ...prop("recipeIngredient"),
         ...prop("ingredients"),
     ]);
-    const instructions = prop("recipeInstructions").join("\n");
+    const instructions = normaliseSteps(prop("recipeInstructions").join("\n"));
     const title = first("name");
 
     if (!title && ingredients.length === 0 && !instructions) return null;
@@ -327,7 +328,7 @@ Return ONLY valid raw JSON (no markdown, no code fences) in EXACTLY this shape:
 {
   "title": string,
   "description": string | null,
-  "instructions": string,              // steps joined by newline characters
+  "instructions": [string],            // one step per element, in order — never one paragraph
   "prep_time_minutes": number | null,
   "cook_time_minutes": number | null,
   "ingredients": [ { "name": string, "quantity": "", "unit": "" } ],
@@ -373,7 +374,7 @@ ${text}`,
                 ? data.ingredients.map((i) => (typeof i === "string" ? i : i?.name))
                 : [],
         ),
-        instructions: typeof data.instructions === "string" ? data.instructions : "",
+        instructions: normaliseSteps(data.instructions),
         prepTime: data.prep_time_minutes ? `PT${data.prep_time_minutes}M` : null,
         cookTime: data.cook_time_minutes ? `PT${data.cook_time_minutes}M` : null,
         nutrition,
@@ -640,7 +641,7 @@ ${ingredientLines}
 
 Do the following:
 - For EACH ingredient, give a sensible amount for the serving count: a numeric "quantity" and a short "unit". Use metric UK units where sensible (g, ml, tbsp, tsp) or leave "unit" empty for whole counts (e.g. 1 onion, 2 eggs). Do NOT add, remove, reorder or rename ingredients.
-- If the method is missing or thin, write clear step-by-step instructions (one step per line).
+- If the method is missing or thin, write clear step-by-step instructions. If it is written as one paragraph, split it into steps without changing what it says.
 - If the description is missing, write a short one-sentence description.
 - Estimate the macros PER SERVING from the amounts.
 
@@ -648,7 +649,7 @@ Return ONLY valid raw JSON (no markdown, no code fences) in EXACTLY this shape:
 {
   "description": string,
   "servings": number,
-  "instructions": string,              // steps joined by newline characters
+  "instructions": [string],            // one step per element, in order — never one paragraph
   "ingredients": [ { "name": string, "quantity": string, "unit": string } ],
   "calories": number,                  // per serving, kcal
   "protein_g": number,                 // per serving, grams
@@ -699,9 +700,7 @@ Return ONLY valid raw JSON (no markdown, no code fences) in EXACTLY this shape:
                 : null,
             servings: knownServings ?? firstInt(data.servings) ?? 4,
             instructions:
-                typeof data.instructions === "string"
-                    ? data.instructions
-                    : flattenInstructions(data.instructions).join("\n"),
+                normaliseSteps(data.instructions),
             ingredients: outIngredients,
             calories: nutrition.calories,
             protein_g: nutrition.protein_g,
@@ -743,7 +742,7 @@ Return ONLY valid raw JSON (no markdown, no code fences) in EXACTLY this shape:
 {
   "title": string,
   "description": string | null,
-  "instructions": string,              // steps joined by newline characters
+  "instructions": [string],            // one step per element, in order — never one paragraph
   "ingredients": [ { "name": string, "quantity": "", "unit": "" } ],
   "prep_time_minutes": number | null,
   "cook_time_minutes": number | null,
@@ -785,9 +784,7 @@ Give realistic quantities in the ingredient names and estimate the per-serving m
             title: data.title,
             description: data.description || null,
             instructions:
-                typeof data.instructions === "string"
-                    ? data.instructions
-                    : flattenInstructions(data.instructions).join("\n"),
+                normaliseSteps(data.instructions),
             link_url: null,
             prep_time_minutes: firstInt(data.prep_time_minutes),
             cook_time_minutes: firstInt(data.cook_time_minutes),
@@ -848,7 +845,7 @@ Return ONLY valid raw JSON (no markdown, no code fences) in EXACTLY this shape:
   "canonical_dish": string,            // the plain generic name, lower case, no
                                        // possessives or adjectives, e.g. "lasagne"
   "description": string | null,
-  "instructions": string,              // steps joined by newline characters
+  "instructions": [string],            // one step per element, in order — never one paragraph
   "ingredients": [ { "name": string, "quantity": "", "unit": "" } ],
   "prep_time_minutes": number | null,
   "cook_time_minutes": number | null,
@@ -954,9 +951,7 @@ function usualsToCreateData(input, data) {
         recipe_title: String(data.title).slice(0, 255),
         recipe_description: data.description || null,
         recipe_instructions:
-            typeof data.instructions === "string"
-                ? data.instructions
-                : flattenInstructions(data.instructions).join("\n"),
+            normaliseSteps(data.instructions),
         recipe_link_url: null,
         prep_time_minutes: firstInt(data.prep_time_minutes),
         cook_time_minutes: firstInt(data.cook_time_minutes),
@@ -1210,7 +1205,7 @@ Return ONLY valid raw JSON (no markdown, no code fences) in EXACTLY this shape:
 {
   "title": string,
   "description": string | null,
-  "instructions": string,              // steps joined by newline characters
+  "instructions": [string],            // one step per element, in order — never one paragraph
   "ingredients": [ { "name": string, "quantity": "", "unit": "" } ],
   "prep_time_minutes": number | null,
   "cook_time_minutes": number | null,
@@ -1272,7 +1267,7 @@ function validateDraft(data) {
     const ingredients = Array.isArray(data.ingredients) ? data.ingredients : [];
     if (ingredients.length === 0) return false;
 
-    const instructions = typeof data.instructions === "string" ? data.instructions : "";
+    const instructions = normaliseSteps(data.instructions);
     if (!instructions.trim()) return false;
 
     // Soft check: OCR that drops amounts leaves ingredient lines with no digits.
@@ -1359,9 +1354,7 @@ async function parseFromPhoto(req, res, next) {
             title: data.title,
             description: data.description || null,
             instructions:
-                typeof data.instructions === "string"
-                    ? data.instructions
-                    : flattenInstructions(data.instructions).join("\n"),
+                normaliseSteps(data.instructions),
             link_url: null,
             prep_time_minutes: firstInt(data.prep_time_minutes),
             cook_time_minutes: firstInt(data.cook_time_minutes),
