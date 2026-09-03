@@ -1088,6 +1088,26 @@ async function countRecentEvents(type, householdId, interval = "24 hours") {
     return rows[0].n;
 }
 
+// Per-user variants. Used by the install email: the verification hook runs
+// before the user's household exists, so these key on user_id.
+async function hasEvent(type, userId) {
+    const { rows } = await pool.query(
+        `SELECT 1 FROM app_events WHERE type = $1 AND user_id = $2 LIMIT 1`,
+        [type, userId],
+    );
+    return rows.length > 0;
+}
+
+async function countRecentUserEvents(type, userId, interval = "24 hours") {
+    const { rows } = await pool.query(
+        `SELECT count(*)::int AS n FROM app_events
+         WHERE type = $1 AND user_id = $2
+           AND created_at >= now() - $3::interval`,
+        [type, userId, interval],
+    );
+    return rows[0].n;
+}
+
 module.exports = {
     getHouseholdIdForUser,
     ensureHouseholdForUser,
@@ -1102,6 +1122,8 @@ module.exports = {
     // race on tags.name UNIQUE, swallow the violation and return undefined.
     createSingleTag,
     countRecentEvents,
+    hasEvent,
+    countRecentUserEvents,
     setMemberOnboarding,
     setMemberFoodPrefs,
     setHouseholdDietaryRule,

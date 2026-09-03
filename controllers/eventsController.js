@@ -20,6 +20,14 @@ const ALLOWED = new Set([
     // the ratio between the two is the drop-off. Keep the names distinct: the
     // usuals fair-use counter counts onboarding_usuals only.
     "onboarding_usuals_typed",
+    // Install funnel. iOS has no install prompt or appinstalled event, so the
+    // sheet is ours and the only true "installed" signal is a later launch in
+    // standalone display-mode (install_standalone_open, once per session).
+    // install_email_sent is written server-side (lib/install.js), not here.
+    "install_prompt_shown",
+    "install_prompt_outcome",
+    "install_page_view",
+    "install_standalone_open",
 ]);
 
 const num = (v) => (Number.isFinite(v) ? Math.trunc(v) : undefined);
@@ -52,6 +60,14 @@ function cleanMeta(type, raw) {
         set("usuals_written", num(m.usualsWritten));
         set("usuals_title_only", num(m.usualsTitleOnly));
     }
+
+    if (type.startsWith("install_")) {
+        set("platform", str(m.platform, 20));
+        set("browser", str(m.browser, 20));
+    }
+    if (type === "install_prompt_shown") set("source", str(m.source, 20));
+    if (type === "install_prompt_outcome") set("outcome", str(m.outcome, 20));
+    if (type === "install_page_view") set("from", str(m.from, 20));
 
     if (Object.keys(out).length === 0) return null;
     // Belt and braces against an unexpectedly large payload reaching JSONB.

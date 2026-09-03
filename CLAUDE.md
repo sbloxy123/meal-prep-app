@@ -104,6 +104,7 @@ Two constraints drive this order:
 | `shoppingListRouter` | `/shopping-list` | Draft list from recipe ingredients + own items; `POST /shopping-list/finish` closes the weekly loop (clears draft + generated + takes recipes off the menu) |
 | `generatedShoppingListRouter` | `/generated-shopping-list` | AI aisle-organised list; `POST /generated-shopping-list` appends a single "forgot" item |
 | `householdRouter` | `/household` | household + members + pending invites (`GET`), `POST /invite` `/accept` `/leave`, `DELETE /invite/:id` `/member/:id`, `PUT /` (rename) |
+| `installRouter` | `/install` | `POST /email` — resend the install-guide email (3/user/24h) |
 
 ### Authentication
 
@@ -124,6 +125,7 @@ BetterAuth manages four tables: `user`, `session`, `account`, `verification` —
 - Email is sent through **Resend** (`lib/email.js`). Reset/verification links are rewritten to the frontend origin so the Next proxy keeps the session cookie same-origin.
 - **Account deletion** (`user.deleteUser` enabled) — `POST /api/auth/delete-user { password }`. The `beforeDelete` hook (`lib/auth.js`) is household-aware: a **sole** member deleting their account purges their Cloudinary photos and deletes the whole household (cascading recipes/lists); a **shared** member's deletion leaves the shared data intact — `recipes.user_id` is `ON DELETE SET NULL` (migration `007`), so recipes stay with attribution nulled.
 - The frontend auth pages (`/reset-password`, `/verify-email`, unverified sign-in state) and the household-management UI are all built.
+- **Install email** (`lib/install.js`): `emailVerification.afterEmailVerification` sends "Put Fornetto on your home screen" (link to `FRONTEND_URL/install?from=email`) once per account — fire-and-forget, because BetterAuth awaits the hook before it sets the session cookie, and `sendEmail` throws on a Resend failure. The send record is the `install_email_sent` row in `app_events` (keyed by `user_id`: no household exists yet at that point). `POST /install/email` (auth-guarded, `installRouter`) resends it on demand from the Account page, capped at 3/user/24h (429 `INSTALL_EMAIL_LIMIT`, show the `message`). iPhones have no install prompt, so this email is how the link reaches the phone.
 
 All API routes (`/recipes`, `/shopping-list`, `/generated-shopping-list`) are protected by `middleware/requireAuth.js`, which reads the session from the BetterAuth cookie, sets `req.user`, and resolves the caller's household into `req.householdId` (lazily creating one on first use — see Households below).
 
