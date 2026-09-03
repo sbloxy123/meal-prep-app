@@ -27,7 +27,7 @@ async function overview(req, res, next) {
         let days = parseInt(req.query.days, 10);
         if (!ALLOWED_DAYS.includes(days)) days = 30;
 
-        const [totalsRes, aiRes, invitesRes, macrosRes, tagsRes, deviceRes, onboardingRes] =
+        const [totalsRes, aiRes, invitesRes, macrosRes, tagsRes, deviceRes, onboardingRes, installRes] =
             await Promise.all([
                 pool.query(`
                     SELECT
@@ -95,6 +95,26 @@ async function overview(req, res, next) {
                        AND type LIKE 'onboarding_%'`,
                     [days],
                 ),
+                pool.query(
+                    `SELECT
+                        COUNT(*) FILTER (WHERE type = 'install_prompt_shown')::int AS shown,
+                        COUNT(*) FILTER (WHERE type = 'install_prompt_outcome'
+                            AND meta->>'outcome' = 'native_accepted')::int          AS native_accepted,
+                        COUNT(*) FILTER (WHERE type = 'install_prompt_outcome'
+                            AND meta->>'outcome' = 'guide')::int                    AS guide,
+                        COUNT(*) FILTER (WHERE type = 'install_prompt_outcome'
+                            AND meta->>'outcome' = 'later')::int                    AS later,
+                        COUNT(*) FILTER (WHERE type = 'install_prompt_outcome'
+                            AND meta->>'outcome' = 'never')::int                    AS never,
+                        COUNT(*) FILTER (WHERE type = 'install_page_view')::int    AS page_views,
+                        COUNT(*) FILTER (WHERE type = 'install_email_sent')::int   AS emails_sent,
+                        COUNT(DISTINCT user_id)
+                            FILTER (WHERE type = 'install_standalone_open')::int    AS standalone_users
+                     FROM app_events
+                     WHERE created_at >= now() - ($1::int || ' days')::interval
+                       AND type LIKE 'install_%'`,
+                    [days],
+                ),
             ]);
 
         const t = totalsRes.rows[0];
@@ -126,6 +146,20 @@ async function overview(req, res, next) {
             usualsDishes: Number(ob.usuals_dishes),
             usualsWritten: Number(ob.usuals_written),
             usualsTitleOnly: Number(ob.usuals_title_only),
+        };
+
+        const ins = installRes.rows[0];
+        const install = {
+            shown: Number(ins.shown),
+            nativeAccepted: Number(ins.native_accepted),
+            guide: Number(ins.guide),
+            later: Number(ins.later),
+            never: Number(ins.never),
+            pageViews: Number(ins.page_views),
+            emailsSent: Number(ins.emails_sent),
+            // Distinct users seen running the installed app — the only real
+            // install signal on iOS.
+            standaloneUsers: Number(ins.standalone_users),
         };
 
         const [signups, activeUsers, aiCallsRows, recipesCreated, listsGenerated, weekAdds, onboardingCompleted] =
@@ -215,6 +249,7 @@ async function overview(req, res, next) {
                 invitesAccepted: inv.accepted,
                 invitesPending: inv.pending,
                 onboarding,
+                install,
                 macrosSource,
                 topTags: tagsRes.rows.map((r) => ({ name: r.name, count: Number(r.n) })),
                 deviceSplit,
