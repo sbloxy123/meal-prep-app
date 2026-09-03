@@ -27,7 +27,7 @@ async function overview(req, res, next) {
         let days = parseInt(req.query.days, 10);
         if (!ALLOWED_DAYS.includes(days)) days = 30;
 
-        const [totalsRes, aiRes, invitesRes, macrosRes, tagsRes, deviceRes, onboardingRes, installRes] =
+        const [totalsRes, aiRes, invitesRes, macrosRes, tagsRes, deviceRes, onboardingRes, installRes, unverifiedRes] =
             await Promise.all([
                 pool.query(`
                     SELECT
@@ -106,6 +106,8 @@ async function overview(req, res, next) {
                             AND meta->>'outcome' = 'later')::int                    AS later,
                         COUNT(*) FILTER (WHERE type = 'install_prompt_outcome'
                             AND meta->>'outcome' = 'never')::int                    AS never,
+                        COUNT(*) FILTER (WHERE type = 'install_prompt_outcome'
+                            AND meta->>'outcome' = 'coach')::int                    AS coach,
                         COUNT(*) FILTER (WHERE type = 'install_page_view')::int    AS page_views,
                         COUNT(*) FILTER (WHERE type = 'install_email_sent')::int   AS emails_sent,
                         COUNT(DISTINCT user_id)
@@ -114,6 +116,22 @@ async function overview(req, res, next) {
                      WHERE created_at >= now() - ($1::int || ' days')::interval
                        AND type LIKE 'install_%'`,
                     [days],
+                ),
+                // All-time, not windowed: the notice must persist until the
+                // walkthrough is re-verified. max_verified is the newest
+                // MAX_VERIFIED_IOS any client has reported, so once the
+                // frontend ships a bump the notice clears by itself.
+                pool.query(
+                    `SELECT
+                        split_part(meta->>'ios', '.', 1)::int AS major,
+                        COUNT(DISTINCT COALESCE(user_id, id::text))::int AS devices,
+                        MIN(created_at) AS first_seen,
+                        MAX((meta->>'verified')::int) AS max_verified
+                     FROM app_events
+                     WHERE type = 'install_layout_unverified'
+                       AND meta->>'ios' ~ '^[0-9]+'
+                     GROUP BY major
+                     ORDER BY major DESC`,
                 ),
             ]);
 
@@ -155,11 +173,23 @@ async function overview(req, res, next) {
             guide: Number(ins.guide),
             later: Number(ins.later),
             never: Number(ins.never),
+            coach: Number(ins.coach),
             pageViews: Number(ins.page_views),
             emailsSent: Number(ins.emails_sent),
             // Distinct users seen running the installed app — the only real
             // install signal on iOS.
             standaloneUsers: Number(ins.standalone_users),
+            // Newer-than-verified iOS majors seen in the wild (stale-layout
+            // alarm); the dashboard shows the ones above maxVerifiedIos.
+            unverifiedIos: unverifiedRes.rows.map((r) => ({
+                major: Number(r.major),
+                devices: Number(r.devices),
+                firstSeen: r.first_seen,
+            })),
+            maxVerifiedIos: unverifiedRes.rows.reduce(
+                (m, r) => (r.max_verified != null ? Math.max(m ?? 0, Number(r.max_verified)) : m),
+                null,
+            ),
         };
 
         const [signups, activeUsers, aiCallsRows, recipesCreated, listsGenerated, weekAdds, onboardingCompleted] =
