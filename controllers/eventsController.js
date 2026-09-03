@@ -28,7 +28,12 @@ const ALLOWED = new Set([
     "install_prompt_outcome",
     "install_page_view",
     "install_standalone_open",
+    // A phone on an iOS newer than the walkthrough has been verified on. The
+    // first sighting of each major emails the admins (lib/install.js).
+    "install_layout_unverified",
 ]);
+
+const { alertNewIosMajor } = require("../lib/install");
 
 const num = (v) => (Number.isFinite(v) ? Math.trunc(v) : undefined);
 const str = (v, max = 40) => (typeof v === "string" ? v.slice(0, max) : undefined);
@@ -68,6 +73,10 @@ function cleanMeta(type, raw) {
     if (type === "install_prompt_shown") set("source", str(m.source, 20));
     if (type === "install_prompt_outcome") set("outcome", str(m.outcome, 20));
     if (type === "install_page_view") set("from", str(m.from, 20));
+    if (type === "install_layout_unverified") {
+        set("ios", str(m.ios, 8));
+        set("verified", num(m.verified));
+    }
 
     if (Object.keys(out).length === 0) return null;
     // Belt and braces against an unexpectedly large payload reaching JSONB.
@@ -79,11 +88,17 @@ async function logEvent(req, res) {
     // Unknown event names are ignored rather than rejected — analytics must
     // never be able to break a user-facing flow.
     if (ALLOWED.has(type)) {
+        const meta = cleanMeta(type, req.body?.meta);
         db.recordEvent(type, {
             userId: req.user?.id ?? null,
             householdId: req.householdId ?? null,
-            meta: cleanMeta(type, req.body?.meta),
+            meta,
         });
+        if (type === "install_layout_unverified" && meta?.ios) {
+            void alertNewIosMajor(meta.ios).catch((err) =>
+                console.error("[install] iOS alert failed:", err.message ?? err),
+            );
+        }
     }
     res.json({ ok: true });
 }

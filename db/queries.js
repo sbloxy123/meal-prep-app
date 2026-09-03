@@ -1098,6 +1098,16 @@ async function hasEvent(type, userId) {
     return rows.length > 0;
 }
 
+// Any row of this type whose meta[key] equals value (as text). Used to make
+// once-ever alerts idempotent (install_layout_alerted per iOS major).
+async function hasEventMeta(type, key, value) {
+    const { rows } = await pool.query(
+        `SELECT 1 FROM app_events WHERE type = $1 AND meta->>$2 = $3 LIMIT 1`,
+        [type, key, value],
+    );
+    return rows.length > 0;
+}
+
 async function countRecentUserEvents(type, userId, interval = "24 hours") {
     const { rows } = await pool.query(
         `SELECT count(*)::int AS n FROM app_events
@@ -1123,6 +1133,7 @@ module.exports = {
     createSingleTag,
     countRecentEvents,
     hasEvent,
+    hasEventMeta,
     countRecentUserEvents,
     setMemberOnboarding,
     setMemberFoodPrefs,
