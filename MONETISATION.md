@@ -75,7 +75,18 @@ Every household carries a snapshot of the plan rules taken when it was created: 
 
 ## What the dashboard tells you
 
-Back of house (`/back-of-house`): AI actions and cost per action, model, and household; latency; refunds, failures and refusals; day-1 / 7 / 30 retention; household sizes; credits used per plan with percentiles and how many households are at their ceiling; the trial funnel (started, prompted, converted, expired); invites blocked by seats; paying monthly vs yearly and founders; the aisle-cache review queue.
+Back of house (`/back-of-house`, linked from the rail and Account for admin accounts) is organised in tabs:
+
+- **Overview** — users, active 7 days, day-7 retention, paying households + MRR, AI cost per paying household, trial-to-paid; alerts; and the **month-by-month table** from nightly snapshots (CSV download). Stocks are the month's last day, everything else is the month's total; greyed cells were reconstructed after the fact.
+- **Users** — one person at a time: search, segments, sort.
+- **Engagement** — active users, signups, retention, household sizes, devices, the install funnel.
+- **Onboarding** — the questionnaire step by step: where people skip, dietary answers, starters vs their own meals, and what completers did in the week after.
+- **AI & cost** — per action, model and household: cost, tokens, latency, refunds, failures, refusals; aisle-sort model calls.
+- **Credits & revenue** — credits used per plan with percentiles and ceiling hits; the trial funnel; invites blocked by seats; paying monthly / yearly / founders.
+- **Aisle cache** — the review queue.
+- **Settings** — Plan settings and Premium grants.
+
+A **Monday email** to the admin addresses carries last week's key numbers with the week-on-week change. MRR everywhere is at the GBP list price (USD/EUR subscribers count as £3.99 / £29.99); Stripe is the source of truth for actual money.
 
 ## The 60-day review
 

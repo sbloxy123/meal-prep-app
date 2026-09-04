@@ -89,9 +89,10 @@ initializeDatabase()
                 throw error;
             }
             console.log(`Express app listening on port ${PORT}!`);
-            // Hourly: the two trial-ending emails (lib/trial.js). Idempotent
-            // via a database claim, so a second instance is harmless.
-            require("./lib/trial").startTrialSweep();
+            // Background jobs (lib/jobs.js): hourly tick, each job claims its
+            // work in the database so restarts and a second instance are harmless.
+            require("./lib/jobs-registry").registerAll();
+            require("./lib/jobs").startJobs();
         });
     })
     .catch((error) => {

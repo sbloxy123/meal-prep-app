@@ -22,6 +22,8 @@ const recipeSchema = z.object({
     carb_g: z.coerce.number().optional(),
     fat_g: z.coerce.number().optional(),
     macros_source: z.enum(["manual", "imported", "estimated"]).optional(),
+    // Where the draft came from — analytics only, never stored on the recipe.
+    recipe_source: z.enum(["manual", "import", "photo", "generate", "social", "share", "starter", "usuals"]).optional(),
 });
 
 // POST /recipes/import — the source URL to scrape.

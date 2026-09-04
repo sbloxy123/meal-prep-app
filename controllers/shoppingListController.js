@@ -76,6 +76,9 @@ async function getShoppingList(req, res, next) {
             // Plan, trial and credits for the whole app to read (lib/credits.js
             // buildEntitlement shape).
             entitlement: publicEntitlement,
+            // Shows the Back of house link in the rail and on Account; the real
+            // gate is server-side (requireAdmin on every /admin route).
+            isAdmin: require("../middleware/requireAdmin").isAdminEmail(req.user.email),
             // Onboarding questionnaire state — this response is the app's one
             // "chrome" fetch, so the wizard's trigger rides it for free.
             //
@@ -115,9 +118,21 @@ async function deleteShoppingList(req, res, next) {
 async function finishShop(req, res, next) {
     try {
         const householdId = req.householdId;
+        // Counted before the list is cleared: the end of the weekly loop is the
+        // one habit metric that matters (shops per active household per week).
+        let items = 0;
+        let collected = 0;
+        try {
+            const gen = await db.getGeneratedShoppingListItems(householdId);
+            items = gen.length;
+            collected = gen.filter((g) => g.is_collected).length;
+        } catch {
+            // analytics only
+        }
         await db.deleteShoppingList(householdId);
         await db.clearGeneratedShoppingList(householdId);
         await db.removeIsOnMenuRecipes(householdId);
+        db.recordEvent("shop_finished", { userId: req.user.id, householdId, meta: { items, collected } });
         res.json({ success: true });
     } catch (error) {
         next(error);
