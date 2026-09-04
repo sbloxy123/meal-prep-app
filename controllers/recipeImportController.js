@@ -1,11 +1,11 @@
 const cheerio = require("cheerio");
-const Anthropic = require("@anthropic-ai/sdk");
 const { jsonrepair } = require("jsonrepair");
 
 const db = require("../db/queries");
 const { assertSafeUrl } = require("../lib/urlGuard");
 const { uploadFromUrl } = require("../lib/cloudinary");
-const { weeklyLimitReached } = require("../lib/aiAllowance");
+const { startAiAction } = require("../lib/aiAllowance");
+const { runModel, textOf } = require("../lib/ai");
 const { normaliseSteps } = require("../lib/steps");
 const {
     importUrlSchema,
@@ -15,8 +15,9 @@ const {
     parsePhotoSchema,
 } = require("../schemas/recipe.schema.js");
 
-// Reuse the same LLM client/model as shoppingListController (parse-ingredients).
-const client = new Anthropic();
+// Every model call goes through lib/ai.js runModel(ledger, params) so tokens,
+// cost and latency land on the action's ai_usage row. Same model as
+// shoppingListController.
 const AI_MODEL = "claude-haiku-4-5-20251001";
 // Photo → recipe reads a cookbook page with vision. Haiku handles clean pages
 // cheaply; when it's unsure or its output fails validation we escalate the same
@@ -29,6 +30,9 @@ const MAX_REDIRECTS = 3;
 const IMPORT_LIMIT = 20;
 const GENERATE_LIMIT = 15;
 const PHOTO_LIMIT = 15;
+// Up to four page photos through a vision model; Sonnet on a dense page can
+// take a while. Well under the SDK default (10 minutes) all the same.
+const PHOTO_CALL_TIMEOUT_MS = 90_000;
 const IMPROVE_LIMIT = 15;
 const SOCIAL_LIMIT = 20;
 const SUGGEST_LIMIT = 15;
@@ -314,10 +318,10 @@ function stripFences(text) {
 // AI extraction from a plain block of text — the readable text of a web page, or
 // a social-media post caption/description. Returns the same `fields` shape the
 // scrapers produce (so buildDraft can consume it), or null if it isn't a recipe.
-async function extractRecipeFromText(text) {
+async function extractRecipeFromText(text, ledger = null) {
     if (!text || !text.trim()) return null;
 
-    const message = await client.messages.create({
+    const message = await runModel(ledger, {
         model: AI_MODEL,
         max_tokens: 2048,
         messages: [
@@ -383,8 +387,8 @@ ${text}`,
 }
 
 // Tier-3 web-page fallback: run the text extractor over the page's visible text.
-async function extractWithAI($) {
-    return extractRecipeFromText(pageToText($));
+async function extractWithAI($, ledger) {
+    return extractRecipeFromText(pageToText($), ledger);
 }
 
 // ---------- fetching (SSRF-guarded, timeout, size cap, redirects) ----------
@@ -445,6 +449,7 @@ async function readCapped(response) {
 // ---------- controllers ----------
 
 async function importRecipe(req, res, next) {
+    let ledger = null;
     try {
         const parsed = importUrlSchema.safeParse(req.body);
         if (!parsed.success) {
@@ -460,34 +465,42 @@ async function importRecipe(req, res, next) {
             return res.status(400).json({ error: guardError.message });
         }
 
-        const householdId = req.householdId;
-        if (await weeklyLimitReached(householdId, res)) return;
-        const recent = await db.countRecentImports(householdId, "import");
-        if (recent >= IMPORT_LIMIT) {
-            return res.status(429).json({
-                error: "Import limit reached — 20 per 6 hours. Try again later.",
-            });
-        }
-        await db.recordImport(householdId, "import");
+        ledger = await startAiAction(req, res, {
+            action: "import",
+            credits: 1,
+            burstLimit: IMPORT_LIMIT,
+            burstMessage: "Import limit reached — 20 per 6 hours. Try again later.",
+        });
+        if (!ledger) return;
 
         let html;
         try {
             html = await fetchPage(url);
         } catch (fetchError) {
+            // Nothing reached the model: not a charge.
+            await ledger.settle("failed", { error: fetchError, errorCode: "fetch_failed" });
             return res.status(400).json({ error: fetchError.message });
         }
 
         const $ = cheerio.load(html);
-        let fields = extractFromJsonLd($) || extractFromMicrodata($);
+        const fromJsonLd = extractFromJsonLd($);
+        let fields = fromJsonLd || extractFromMicrodata($);
+        const source = fromJsonLd ? "jsonld" : fields ? "microdata" : "ai";
         if (!fields) {
             try {
-                fields = await extractWithAI($);
+                fields = await extractWithAI($, ledger);
             } catch (aiError) {
                 console.error("[import] AI fallback failed:", aiError.message);
             }
         }
 
         if (!fields || (!fields.title && (fields.ingredients || []).length === 0)) {
+            // The model answered (or the scrape found nothing) but there is no
+            // recipe to give back — refunded, never charged.
+            await ledger.settle(ledger.calls.length ? "refund" : "failed", {
+                outcome: "no_recipe",
+                meta: { source },
+            });
             return res.status(400).json({
                 error: "No recipe could be extracted from that URL.",
             });
@@ -506,13 +519,16 @@ async function importRecipe(req, res, next) {
         }
         delete draft._imageUrl;
 
+        await ledger.settle("ok", { meta: { source } });
         res.json(draft);
     } catch (error) {
+        if (ledger) await ledger.fail(error);
         next(error);
     }
 }
 
 async function estimateMacros(req, res, next) {
+    let ledger = null;
     try {
         const parsed = estimateMacrosSchema.safeParse(req.body);
         if (!parsed.success) {
@@ -520,15 +536,13 @@ async function estimateMacros(req, res, next) {
         }
         const { title, servings, ingredients } = parsed.data;
 
-        const householdId = req.householdId;
-        if (await weeklyLimitReached(householdId, res)) return;
-        const recent = await db.countRecentImports(householdId, "estimate");
-        if (recent >= IMPORT_LIMIT) {
-            return res.status(429).json({
-                error: "Estimate limit reached — 20 per 6 hours. Try again later.",
-            });
-        }
-        await db.recordImport(householdId, "estimate");
+        ledger = await startAiAction(req, res, {
+            action: "estimate",
+            credits: 1,
+            burstLimit: IMPORT_LIMIT,
+            burstMessage: "Estimate limit reached — 20 per 6 hours. Try again later.",
+        });
+        if (!ledger) return;
 
         const knownServings = servings && servings > 0 ? servings : null;
         const ingredientLines = ingredients
@@ -543,7 +557,7 @@ async function estimateMacros(req, res, next) {
             ? `This recipe makes ${knownServings} servings. Use exactly that serving count.`
             : `The number of servings isn't given. Estimate a typical serving count for this dish yourself from the ingredient amounts (default to 4 if truly unclear), then give macros per single serving.`;
 
-        const message = await client.messages.create({
+        const message = await runModel(ledger, {
             model: AI_MODEL,
             max_tokens: 512,
             messages: [
@@ -571,6 +585,7 @@ Return ONLY valid raw JSON (no markdown, no code fences) in exactly this shape:
             try {
                 data = JSON.parse(jsonrepair(raw));
             } catch {
+                await ledger.settle("failed", { errorCode: "unparseable" });
                 return res.status(400).json({ error: "Could not estimate macros" });
             }
         }
@@ -586,12 +601,15 @@ Return ONLY valid raw JSON (no markdown, no code fences) in exactly this shape:
             carb_g: parseNumeric(data.carb_g),
             fat_g: parseNumeric(data.fat_g),
         });
+        await ledger.settle("ok");
     } catch (error) {
+        if (ledger) await ledger.fail(error);
         next(error);
     }
 }
 
 async function improveRecipe(req, res, next) {
+    let ledger = null;
     try {
         const parsed = improveRecipeSchema.safeParse(req.body);
         if (!parsed.success) {
@@ -599,15 +617,13 @@ async function improveRecipe(req, res, next) {
         }
         const { title, servings, description, instructions, ingredients } = parsed.data;
 
-        const householdId = req.householdId;
-        if (await weeklyLimitReached(householdId, res)) return;
-        const recent = await db.countRecentImports(householdId, "improve");
-        if (recent >= IMPROVE_LIMIT) {
-            return res.status(429).json({
-                error: "Improve limit reached — 15 per 6 hours. Try again later.",
-            });
-        }
-        await db.recordImport(householdId, "improve");
+        ledger = await startAiAction(req, res, {
+            action: "improve",
+            credits: 1,
+            burstLimit: IMPROVE_LIMIT,
+            burstMessage: "Improve limit reached — 15 per 6 hours. Try again later.",
+        });
+        if (!ledger) return;
 
         const knownServings = servings && servings > 0 ? servings : null;
         const servingsInstruction = knownServings
@@ -624,7 +640,7 @@ async function improveRecipe(req, res, next) {
             })
             .join("\n");
 
-        const message = await client.messages.create({
+        const message = await runModel(ledger, {
             model: AI_MODEL,
             max_tokens: 1536,
             messages: [
@@ -669,10 +685,12 @@ Return ONLY valid raw JSON (no markdown, no code fences) in EXACTLY this shape:
             try {
                 data = JSON.parse(jsonrepair(raw));
             } catch {
+                await ledger.settle("failed", { errorCode: "unparseable" });
                 return res.status(400).json({ error: "Could not improve this recipe" });
             }
         }
         if (!data || typeof data !== "object") {
+            await ledger.settle("refund", { outcome: "no_result" });
             return res.status(400).json({ error: "Could not improve this recipe" });
         }
 
@@ -707,29 +725,30 @@ Return ONLY valid raw JSON (no markdown, no code fences) in EXACTLY this shape:
             carb_g: nutrition.carb_g,
             fat_g: nutrition.fat_g,
         });
+        await ledger.settle("ok");
     } catch (error) {
+        if (ledger) await ledger.fail(error);
         next(error);
     }
 }
 
 async function generateFromTitle(req, res, next) {
+    let ledger = null;
     try {
         const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
         if (!title) {
             return res.status(400).json({ error: "A recipe title is required" });
         }
 
-        const householdId = req.householdId;
-        if (await weeklyLimitReached(householdId, res)) return;
-        const recent = await db.countRecentImports(householdId, "generate");
-        if (recent >= GENERATE_LIMIT) {
-            return res.status(429).json({
-                error: "Generation limit reached — 15 per 6 hours. Try again later.",
-            });
-        }
-        await db.recordImport(householdId, "generate");
+        ledger = await startAiAction(req, res, {
+            action: "generate",
+            credits: 1,
+            burstLimit: GENERATE_LIMIT,
+            burstMessage: "Generation limit reached — 15 per 6 hours. Try again later.",
+        });
+        if (!ledger) return;
 
-        const message = await client.messages.create({
+        const message = await runModel(ledger, {
             model: AI_MODEL,
             max_tokens: 2048,
             messages: [
@@ -766,10 +785,12 @@ Give realistic quantities in the ingredient names and estimate the per-serving m
             try {
                 data = JSON.parse(jsonrepair(raw));
             } catch {
+                await ledger.settle("failed", { errorCode: "unparseable" });
                 return res.status(400).json({ error: "Could not generate a recipe for that title" });
             }
         }
         if (!data || !data.title) {
+            await ledger.settle("refund", { outcome: "no_recipe" });
             return res.status(400).json({ error: "Could not generate a recipe for that title" });
         }
 
@@ -803,7 +824,9 @@ Give realistic quantities in the ingredient names and estimate the per-serving m
             fat_g: nutrition.fat_g,
             macros_source: nutrition.found ? "estimated" : null,
         });
+        await ledger.settle("ok");
     } catch (error) {
+        if (ledger) await ledger.fail(error);
         next(error);
     }
 }
@@ -814,10 +837,10 @@ Give realistic quantities in the ingredient names and estimate the per-serving m
 // write each one up as a proper recipe. This is the ownership moment in
 // onboarding, so two things are deliberate:
 //
-//   1. It is FREE. We never call recordImport — getWeeklyAiUsage counts every
-//      recipe_imports row for the household regardless of `action`, so logging
-//      there would charge ten of their fifteen weekly actions during onboarding.
-//      Fair use is bounded by a per-household daily run counter instead.
+//   1. It is FREE. Its ai_usage row is opened with credits = 0 (so it is
+//      measured — tokens, cost, latency — but never charged; getWeeklyAiUsage
+//      sums credits, not rows). Fair use is bounded by a per-household daily
+//      run counter instead.
 //   2. We do NOT apply the household's dietary answers. Someone who ticked
 //      vegetarian for one member and typed "spag bol" means the beef one they've
 //      cooked for years; handing back a substitute they didn't ask for is
@@ -977,6 +1000,7 @@ function usualsToCreateData(input, data) {
 
 async function generateUsuals(req, res, next) {
     const householdId = req.householdId;
+    let ledger = null;
     try {
         const dishes = parseDishes(req.body?.dishes);
         const use = dishes.slice(0, USUALS_MAX_DISHES);
@@ -1000,12 +1024,21 @@ async function generateUsuals(req, res, next) {
         }
         usualsInFlight.add(householdId);
 
+        // Free: logged (tokens, cost, latency) but opened with 0 credits.
+        ledger = await startAiAction(req, res, {
+            action: "usuals",
+            credits: 0,
+            weekly: false,
+            meta: { dishes: use.length },
+        });
+
         const startedAt = Date.now();
 
         async function draftDish(dish) {
             if (Date.now() - startedAt > USUALS_TOTAL_BUDGET_MS) return null;
             try {
-                const message = await client.messages.create(
+                const message = await runModel(
+                    ledger,
                     {
                         model: AI_MODEL,
                         max_tokens: 2048,
@@ -1098,9 +1131,18 @@ async function generateUsuals(req, res, next) {
             },
         });
 
+        await ledger.settle("ok", {
+            meta: {
+                requested: counts.requested,
+                written: counts.written,
+                title_only: counts.titleOnly,
+                failed: counts.failed,
+            },
+        });
         res.json({ results, counts });
     } catch (error) {
         usualsInFlight.delete(householdId);
+        if (ledger) await ledger.fail(error);
         next(error);
     }
 }
@@ -1127,25 +1169,24 @@ function normaliseSuggestion(raw) {
 }
 
 async function suggestRecipes(req, res, next) {
+    let ledger = null;
     try {
         const rawHint = typeof req.body?.hint === "string" ? req.body.hint.trim() : "";
         const hint = rawHint.slice(0, MAX_HINT_LEN);
 
-        const householdId = req.householdId;
-        if (await weeklyLimitReached(householdId, res)) return;
-        const recent = await db.countRecentImports(householdId, "suggest");
-        if (recent >= SUGGEST_LIMIT) {
-            return res.status(429).json({
-                error: "Suggestion limit reached — 15 per 6 hours. Try again later.",
-            });
-        }
-        await db.recordImport(householdId, "suggest");
+        ledger = await startAiAction(req, res, {
+            action: "suggest",
+            credits: 1,
+            burstLimit: SUGGEST_LIMIT,
+            burstMessage: "Suggestion limit reached — 15 per 6 hours. Try again later.",
+        });
+        if (!ledger) return;
 
         const steer = hint
             ? `The user is after: "${hint}". Tailor every idea to that.`
             : "Give a varied mix of crowd-pleasing everyday home dinners.";
 
-        const message = await client.messages.create({
+        const message = await runModel(ledger, {
             model: AI_MODEL,
             max_tokens: 1536,
             messages: [
@@ -1176,6 +1217,7 @@ Give ${SUGGEST_COUNT} distinct ideas.`,
             try {
                 data = JSON.parse(jsonrepair(raw));
             } catch {
+                await ledger.settle("failed", { errorCode: "unparseable" });
                 return res.status(400).json({ error: "Could not get ideas just now." });
             }
         }
@@ -1188,11 +1230,14 @@ Give ${SUGGEST_COUNT} distinct ideas.`,
         const suggestions = list.map(normaliseSuggestion).filter(Boolean);
 
         if (suggestions.length === 0) {
+            await ledger.settle("refund", { outcome: "no_result" });
             return res.status(400).json({ error: "Could not get ideas just now." });
         }
 
+        await ledger.settle("ok", { meta: { suggestions: suggestions.length } });
         res.json({ suggestions });
     } catch (error) {
+        if (ledger) await ledger.fail(error);
         next(error);
     }
 }
@@ -1224,8 +1269,8 @@ If the images do not contain a recipe, return {"title": null, "confidence": "low
 
 // One vision call for the given model; returns { data, ok }. Mirrors the JSON
 // healing used by the other AI endpoints (JSON.parse → jsonrepair fallback).
-async function extractFromImages(images, model) {
-    const message = await client.messages.create({
+async function extractFromImages(images, model, ledger = null) {
+    const message = await runModel(ledger, {
         model,
         max_tokens: 2048,
         messages: [
@@ -1244,7 +1289,7 @@ async function extractFromImages(images, model) {
                 ],
             },
         ],
-    });
+    }, { timeout: PHOTO_CALL_TIMEOUT_MS });
 
     const raw = stripFences(message.content[0].text);
     try {
@@ -1280,6 +1325,7 @@ function validateDraft(data) {
 }
 
 async function parseFromPhoto(req, res, next) {
+    let ledger = null;
     try {
         const parsed = parsePhotoSchema.safeParse(req.body);
         if (!parsed.success) {
@@ -1295,23 +1341,22 @@ async function parseFromPhoto(req, res, next) {
             return res.status(413).json({ error: "Those photos are too large." });
         }
 
-        const householdId = req.householdId;
-        if (await weeklyLimitReached(householdId, res)) return;
-        const recent = await db.countRecentImports(householdId, "photo");
-        if (recent >= PHOTO_LIMIT) {
-            return res.status(429).json({
-                error: "Photo limit reached — 15 per 6 hours. Try again later.",
-            });
-        }
-        await db.recordImport(householdId, "photo");
+        ledger = await startAiAction(req, res, {
+            action: "photo",
+            credits: 1,
+            burstLimit: PHOTO_LIMIT,
+            burstMessage: "Photo limit reached — 15 per 6 hours. Try again later.",
+            meta: { images: images.length },
+        });
+        if (!ledger) return;
 
         // Haiku first; escalate the same image(s) once to Sonnet when Haiku's
         // JSON won't parse, it self-reports low confidence, or the draft fails
-        // structural validation.
+        // structural validation. Both calls land on the one ledger row.
         let servedBy = AI_MODEL;
         let result;
         try {
-            result = await extractFromImages(images, AI_MODEL);
+            result = await extractFromImages(images, AI_MODEL, ledger);
         } catch (err) {
             console.error("[photo] Haiku call failed:", err.message);
             result = { data: null, ok: false };
@@ -1323,7 +1368,7 @@ async function parseFromPhoto(req, res, next) {
             !validateDraft(result.data);
         if (needsEscalation) {
             try {
-                const escalated = await extractFromImages(images, VISION_ESCALATION_MODEL);
+                const escalated = await extractFromImages(images, VISION_ESCALATION_MODEL, ledger);
                 if (escalated.ok) {
                     result = escalated;
                     servedBy = VISION_ESCALATION_MODEL;
@@ -1335,13 +1380,19 @@ async function parseFromPhoto(req, res, next) {
 
         const data = result.data;
         if (!result.ok || !data || !data.title) {
+            // A model answered but there is no recipe in it → refunded; no
+            // model answered at all → failed. Neither charges.
+            await ledger.settle(ledger.succeededCalls ? "refund" : "failed", {
+                outcome: "no_recipe",
+                meta: { escalated: needsEscalation },
+            });
             return res.status(400).json({
                 error: "No recipe could be read from that photo.",
             });
         }
-        console.log(
-            `[photo] served by ${servedBy} (confidence=${data.confidence ?? "?"})`,
-        );
+        await ledger.settle("ok", {
+            meta: { escalated: needsEscalation, confidence: data.confidence ?? null },
+        });
 
         const nutrition = mapNutrition({
             calories: data.calories,
@@ -1374,6 +1425,7 @@ async function parseFromPhoto(req, res, next) {
             macros_source: nutrition.found ? "estimated" : null,
         });
     } catch (error) {
+        if (ledger) await ledger.fail(error);
         next(error);
     }
 }
@@ -1572,6 +1624,7 @@ async function getSocialCaption(url) {
 }
 
 async function importSocial(req, res, next) {
+    let ledger = null;
     try {
         const parsed = importSocialSchema.safeParse(req.body);
         if (!parsed.success) {
@@ -1601,25 +1654,26 @@ async function importSocial(req, res, next) {
         }
 
         // Rate-limit only now that we're actually going to call the model.
-        const householdId = req.householdId;
-        if (await weeklyLimitReached(householdId, res)) return;
-        const recent = await db.countRecentImports(householdId, "social");
-        if (recent >= SOCIAL_LIMIT) {
-            return res.status(429).json({
-                error: "Import limit reached — 20 per 6 hours. Try again later.",
-            });
-        }
-        await db.recordImport(householdId, "social");
+        ledger = await startAiAction(req, res, {
+            action: "social",
+            credits: 1,
+            burstLimit: SOCIAL_LIMIT,
+            burstMessage: "Import limit reached — 20 per 6 hours. Try again later.",
+            meta: { pasted: Boolean(pasted) },
+        });
+        if (!ledger) return;
 
         let fields;
         try {
-            fields = await extractRecipeFromText(caption);
+            fields = await extractRecipeFromText(caption, ledger);
         } catch (aiError) {
             console.error("[social] extraction failed:", aiError.message);
+            await ledger.fail(aiError);
             return res.status(400).json({ error: "Couldn’t read a recipe from that." });
         }
 
         if (!fields || (!fields.title && (fields.ingredients || []).length === 0)) {
+            await ledger.settle("refund", { outcome: "no_recipe" });
             // A fetched caption may simply be too thin — offer the paste path.
             if (url && !pasted) return res.json({ needsCaption: true });
             return res.status(400).json({ error: "Couldn’t find a recipe in that caption." });
@@ -1638,8 +1692,10 @@ async function importSocial(req, res, next) {
                 draft.image_public_id = uploaded.image_public_id;
             }
         }
+        await ledger.settle("ok");
         res.json(draft);
     } catch (error) {
+        if (ledger) await ledger.fail(error);
         next(error);
     }
 }

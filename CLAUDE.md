@@ -143,10 +143,25 @@ Data is scoped by **household**, not by individual user, so family members can s
 
 ### AI integration
 
-`shoppingListController.js` calls the Anthropic API directly (model `claude-haiku-4-5-20251001`):
+Model calls (Haiku 4.5 everywhere; the photo path escalates once to Sonnet 4.6) live in `controllers/recipeImportController.js` (import, estimate-macros, improve, generate-from-title, suggest, parse-from-photo, import-social, usuals) and `controllers/shoppingListController.js`:
 - `POST /shopping-list/organise` — groups the shopping list into UK supermarket aisles; saves result to `generated_shopping_list`.
 - `POST /shopping-list/parse-ingredients` — parses raw pasted text into individual ingredient items.
-- Both use `jsonrepair` as a fallback when Claude returns slightly malformed JSON.
+- All use `jsonrepair` as a fallback when Claude returns slightly malformed JSON.
+
+**Every model call goes through `lib/ai.js` `runModel(ledger, params, options)`** — the one place the Anthropic client is constructed. It times the call, captures `usage` (tokens) and cost (`lib/aiCost.js`, list prices → USD → pence at `AI_USD_TO_GBP`, default 0.78) onto the action's **ledger**. Never call `client.messages.create` directly; explicit `timeout`/`maxRetries` are the default here (the SDK's 10-minute default once hung parallel requests for minutes).
+
+**The AI usage ledger — `ai_usage` (migration 015), `lib/ledger.js`, `lib/aiAllowance.js`.** One row per user-facing AI action, not per model call (a photo scan that escalates Haiku → Sonnet is one row, `calls = 2`, both costs summed). Every AI endpoint starts with
+
+```js
+ledger = await startAiAction(req, res, { action, credits, burstLimit, burstMessage });
+if (!ledger) return;            // a 429 has been sent (weekly pool → WEEKLY_LIMIT, or the 6h burst cap)
+… await runModel(ledger, params) …
+await ledger.settle("ok");      // or "refund" / "failed"; catch blocks call ledger.fail(error)
+```
+
+`startAiAction` checks the free household's weekly pool, records a refused reservation as a `rejected` row (so "how often do people hit the ceiling" is a query), checks the per-action 6h burst ceiling, then inserts the row `pending` with the action's `credits` — so in-flight work already counts. Outcomes: **ok** keeps the credits; **refund** (the model answered but the result is useless: not a recipe, unreadable photo) and **failed** (no completed answer: SDK threw, `fetchPage` failed, unparseable JSON) zero them — tokens/cost are kept either way, so spend is always measured. `settle` is idempotent. Free-by-design actions (`parse`, `usuals`) open with `credits: 0` and `weekly: false`, so they are logged and burst-capped but never charge. `getWeeklyAiUsage` **sums credits** over `ok` + fresh `pending` rows (a `pending` older than ten minutes is a crashed request); `countRecentUsage` is the burst counter. `recipe_imports` is no longer written (backfilled into `ai_usage` with `meta.legacy = true`); the weekly copy/limit (`WEEKLY_AI_LIMIT = 15`) is unchanged until the credit model lands.
+
+`middleware/requireAuth.js` also upserts `user_activity (user_id, day)` once per user per London day (process-local memo) — the basis for the day-1/7/30 retention figures on `/admin/overview`. `GET /admin/ai?days=` slices the ledger per action/model/household (cost, tokens, p50/p95 latency, refund/fail/reject counts) for the back-of-house dashboard.
 
 **Method steps — `lib/steps.js`.** Every AI path that writes `recipes.instructions` (import, social, generate-from-title, improve, photo, My usuals) passes the model's answer through `normaliseSteps`, which turns an array, a newline string, or one paragraph of prose into one step per line. The prompts ask for an array of steps; normalisation is the safety net, not the mechanism. `validateDraft` normalises too — before that it read the field as a string, so an array counted as an empty method and forced the paid Sonnet escalation. `splitSentences` is a byte-for-byte twin of the frontend's display fallback in `src/lib/instructions.ts`; change them together.
 

@@ -896,33 +896,124 @@ async function removeMember(householdId, targetUserId) {
     }
 }
 
-// ========= RECIPE IMPORT RATE LIMITING ========= //
-// The import/estimate endpoints each incur a fetch + LLM cost per call, so we
-// rate-limit by counting calls (not saved recipes) in a rolling 6-hour window,
-// scoped per household. `action` keeps the two endpoints on independent windows.
+// ========= AI USAGE LEDGER ========= //
+// One ai_usage row per user-facing AI action (migration 015). lib/ledger.js
+// opens the row 'pending' before the model runs and settles it afterwards;
+// controllers never write here directly. Replaces recipe_imports, which is no
+// longer written.
 
-async function countRecentImports(householdId, action) {
+async function insertAiUsage({ householdId, userId = null, action, credits = 0, planAt = null, meta = null }) {
+    const { rows } = await pool.query(
+        `INSERT INTO ai_usage (household_id, user_id, action, credits, status, plan_at, meta)
+         VALUES ($1, $2, $3, $4, 'pending', $5, $6)
+         RETURNING id`,
+        [householdId, userId, action, credits, planAt, meta ? JSON.stringify(meta) : null],
+    );
+    return rows[0].id;
+}
+
+async function settleAiUsage(
+    id,
+    {
+        status,
+        credits,
+        model = null,
+        calls = 0,
+        inputTokens = 0,
+        outputTokens = 0,
+        cacheReadTokens = 0,
+        cacheWriteTokens = 0,
+        costUsd = 0,
+        costPence = 0,
+        latencyMs = null,
+        errorCode = null,
+        meta = null,
+    },
+) {
+    await pool.query(
+        `UPDATE ai_usage SET
+             status             = $2,
+             credits            = $3,
+             model              = COALESCE($4, model),
+             calls              = $5,
+             input_tokens       = $6,
+             output_tokens      = $7,
+             cache_read_tokens  = $8,
+             cache_write_tokens = $9,
+             cost_usd           = $10,
+             cost_pence         = $11,
+             latency_ms         = $12,
+             error_code         = $13,
+             meta               = COALESCE(meta, '{}'::jsonb) || COALESCE($14::jsonb, '{}'::jsonb),
+             settled_at         = now()
+         WHERE id = $1 AND status = 'pending'`,
+        [
+            id,
+            status,
+            credits,
+            model,
+            calls,
+            inputTokens,
+            outputTokens,
+            cacheReadTokens,
+            cacheWriteTokens,
+            costUsd,
+            costPence,
+            latencyMs,
+            errorCode,
+            meta ? JSON.stringify(meta) : null,
+        ],
+    );
+}
+
+// An allowance check that said no. Recorded so "how often do households hit
+// the ceiling" is answerable from the ledger itself. Never counted in sums.
+async function recordAiRejected({ householdId, userId = null, action, credits = 0, planAt = null }) {
+    try {
+        await pool.query(
+            `INSERT INTO ai_usage (household_id, user_id, action, credits, status, plan_at, settled_at, meta)
+             VALUES ($1, $2, $3, 0, 'rejected', $4, now(), $5)`,
+            [householdId, userId, action, planAt, JSON.stringify({ wanted: credits })],
+        );
+    } catch (error) {
+        console.error("recordAiRejected failed:", error.message);
+    }
+}
+
+// Per-action 6h burst ceiling (anti-abuse; applies to every plan). Counts every
+// attempt that reached the model stage — pending, ok and failed alike — but
+// not reservations the allowance refused.
+async function countRecentUsage(householdId, action) {
     const { rows } = await pool.query(
         `SELECT count(*)::int AS count
-         FROM recipe_imports
+         FROM ai_usage
          WHERE household_id = $1
            AND action = $2
+           AND status <> 'rejected'
            AND created_at > now() - interval '6 hours'`,
         [householdId, action],
     );
     return rows[0].count;
 }
 
-async function recordImport(householdId, action) {
-    await pool.query(
-        "INSERT INTO recipe_imports (household_id, action) VALUES ($1, $2)",
-        [householdId, action],
-    );
+// One row per user per London day they made an authenticated request; the
+// basis for D1/D7/D30 retention. Idempotent, fire-and-forget.
+async function recordUserActivity(userId) {
+    try {
+        await pool.query(
+            `INSERT INTO user_activity (user_id, day)
+             VALUES ($1, (now() AT TIME ZONE 'Europe/London')::date)
+             ON CONFLICT DO NOTHING`,
+            [userId],
+        );
+    } catch (error) {
+        console.error("recordUserActivity failed:", error.message);
+    }
 }
 
 // ========= PREMIUM PLAN + WEEKLY AI ALLOWANCE ========= //
 // Free households share ONE pool of AI actions per calendar week across every
-// AI feature (all recorded into recipe_imports). Premium households skip the
+// AI feature (summed from the ai_usage ledger). Premium households skip the
 // weekly pool entirely (the per-action 6h burst ceiling in the controllers
 // still applies to everyone as a fair-use / abuse guard). The week boundary is
 // Monday 00:00 Europe/London — a fixed app timezone, so we don't need each
@@ -946,15 +1037,21 @@ async function getHouseholdPlan(householdId) {
     return rows[0]?.plan ?? "free";
 }
 
-// Count of AI actions used this week and when the window resets, in one query.
+// Credits used this week and when the window resets, in one query. Sums the
+// ledger's settled rows plus fresh in-flight ones (a 'pending' row older than
+// ten minutes is a crashed request, not a live one). Failed and refunded rows
+// carry credits = 0, so they fall out of the sum by themselves; 'usuals' and
+// 'parse' rows are opened with 0 credits and never count.
 async function getWeeklyAiUsage(householdId) {
     const { rows } = await pool.query(
         `SELECT
-             count(*)::int AS used,
+             COALESCE(SUM(credits), 0)::int AS used,
              (date_trunc('week', now() AT TIME ZONE 'Europe/London') + interval '7 days')
                  AT TIME ZONE 'Europe/London' AS resets_at
-         FROM recipe_imports
+         FROM ai_usage
          WHERE household_id = $1
+           AND (status = 'ok'
+                OR (status = 'pending' AND created_at > now() - interval '10 minutes'))
            AND created_at >= (date_trunc('week', now() AT TIME ZONE 'Europe/London'))
                                  AT TIME ZONE 'Europe/London'`,
         [householdId],
@@ -1076,8 +1173,8 @@ async function recordEvent(type, { userId = null, householdId = null, meta = nul
 
 // How many of an event a household has logged recently. Used as a fair-use
 // bound for work that deliberately isn't metered against the weekly AI pool
-// (recipe_imports counts every row regardless of action, so recording there
-// would charge the user).
+// (its ai_usage rows carry 0 credits, so the ledger measures it without
+// charging).
 async function countRecentEvents(type, householdId, interval = "24 hours") {
     const { rows } = await pool.query(
         `SELECT count(*)::int AS n FROM app_events
@@ -1174,8 +1271,11 @@ module.exports = {
     setRecipeFavorite,
     deleteProductItemBoth,
     getCustomProductByName,
-    countRecentImports,
-    recordImport,
+    insertAiUsage,
+    settleAiUsage,
+    recordAiRejected,
+    countRecentUsage,
+    recordUserActivity,
     WEEKLY_AI_LIMIT,
     getHouseholdPlan,
     getWeeklyAiUsage,
