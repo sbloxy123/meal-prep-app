@@ -12,25 +12,58 @@ async function getHouseholdIdForUser(userId) {
     return rows[0]?.household_id ?? null;
 }
 
+// Create a household row with the plan snapshot every household carries
+// (migration 016): today's allowances, weights and member limit from
+// app_config — frozen for this household so later config changes only affect
+// new signups — and a trial that ends `trial_days` after the OWNER signed up.
+// Dating the trial from the user's account, not the household row, means a
+// leave → fresh household can never start a second trial. Inside a
+// transaction: pass the client. Returns the new id.
+async function insertHousehold(client, { name, userId }) {
+    const { getConfig } = require("../lib/config");
+    const cfg = await getConfig();
+    const { rows } = await client.query(
+        `INSERT INTO household (
+             name, credit_allowance, premium_credit_allowance, credit_weights, member_limit,
+             credit_anchor_at, trial_ends_at
+         )
+         SELECT $1, $2, $3, $4::jsonb, $5,
+                now(),
+                COALESCE((SELECT u."createdAt" FROM "user" u WHERE u.id = $6), now())
+                    + ($7::int || ' days')::interval
+         RETURNING id, trial_ends_at`,
+        [
+            name,
+            cfg.free_credit_allowance,
+            cfg.premium_credit_allowance,
+            JSON.stringify(cfg.credit_weights),
+            cfg.member_limit_free,
+            userId,
+            cfg.trial_days,
+        ],
+    );
+    return rows[0];
+}
+
 // Resolve the user's household, creating one (with them as owner) on first use.
 // New users have no household until their first authenticated request.
 async function ensureHouseholdForUser(userId, displayName) {
     const existing = await getHouseholdIdForUser(userId);
     if (existing) return existing;
 
+    let created = null;
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
-        const { rows } = await client.query(
-            "INSERT INTO household (name) VALUES ($1) RETURNING id",
-            [displayName ? `${displayName}'s kitchen` : null],
-        );
-        const householdId = rows[0].id;
+        const household = await insertHousehold(client, {
+            name: displayName ? `${displayName}'s kitchen` : null,
+            userId,
+        });
         const member = await client.query(
             `INSERT INTO household_member (household_id, user_id, role)
              VALUES ($1, $2, 'owner')
              ON CONFLICT (user_id) DO NOTHING`,
-            [householdId, userId],
+            [household.id, userId],
         );
         // If the membership insert was a no-op, a concurrent request already
         // created this user's household — roll back so we don't orphan the row.
@@ -38,12 +71,20 @@ async function ensureHouseholdForUser(userId, displayName) {
             await client.query("ROLLBACK");
         } else {
             await client.query("COMMIT");
+            created = household;
         }
     } catch (error) {
         await client.query("ROLLBACK");
         throw error;
     } finally {
         client.release();
+    }
+    if (created && created.trial_ends_at && new Date(created.trial_ends_at) > new Date()) {
+        recordEvent("trial_started", {
+            userId,
+            householdId: created.id,
+            meta: { ends_at: new Date(created.trial_ends_at).toISOString() },
+        });
     }
     return await getHouseholdIdForUser(userId);
 }
@@ -606,10 +647,31 @@ async function deleteProductItemBoth(productId, productName, householdId) {
 
 // ---- Household management (C2: invite / join / leave / remove) ----
 
-function withStatus(message, status) {
+// An error the API handler turns into { error: code ?? message, message } with
+// the given HTTP status. `code` is a stable machine token (HOUSEHOLD_LIMIT,
+// PREMIUM_MERGE…) the frontend can branch on; leave it off for plain messages.
+function withStatus(message, status, code = null) {
     const err = new Error(message);
     err.status = status;
+    if (code) err.code = code;
     return err;
+}
+
+// Run fn(client) inside BEGIN/COMMIT, rolling back on throw. Every helper that
+// takes an optional `q` (pool or client) can be composed inside it.
+async function withTransaction(fn) {
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+        const out = await fn(client);
+        await client.query("COMMIT");
+        return out;
+    } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+    } finally {
+        client.release();
+    }
 }
 
 async function getHouseholdById(householdId) {
@@ -824,11 +886,7 @@ async function acceptInvite(userId, token) {
 // Move a user out of their current household into a fresh solo one they own.
 // Shared data stays with the old household. Used by leave and remove-member.
 async function moveUserToNewHousehold(client, userId, name) {
-    const { rows } = await client.query(
-        "INSERT INTO household (name) VALUES ($1) RETURNING id",
-        [name || "My kitchen"],
-    );
-    const newId = rows[0].id;
+    const { id: newId } = await insertHousehold(client, { name: name || "My kitchen", userId });
     await client.query(
         `INSERT INTO household_member (household_id, user_id, role)
          VALUES ($1, $2, 'owner')
@@ -897,20 +955,10 @@ async function removeMember(householdId, targetUserId) {
 }
 
 // ========= AI USAGE LEDGER ========= //
-// One ai_usage row per user-facing AI action (migration 015). lib/ledger.js
-// opens the row 'pending' before the model runs and settles it afterwards;
-// controllers never write here directly. Replaces recipe_imports, which is no
-// longer written.
-
-async function insertAiUsage({ householdId, userId = null, action, credits = 0, planAt = null, meta = null }) {
-    const { rows } = await pool.query(
-        `INSERT INTO ai_usage (household_id, user_id, action, credits, status, plan_at, meta)
-         VALUES ($1, $2, $3, $4, 'pending', $5, $6)
-         RETURNING id`,
-        [householdId, userId, action, credits, planAt, meta ? JSON.stringify(meta) : null],
-    );
-    return rows[0].id;
-}
+// One ai_usage row per user-facing AI action (migration 015). reserveCredits
+// (below) opens the row 'pending' before the model runs; lib/ledger.js settles
+// it afterwards. Controllers never write here directly. Replaces
+// recipe_imports, which is no longer written.
 
 async function settleAiUsage(
     id,
@@ -1011,63 +1059,97 @@ async function recordUserActivity(userId) {
     }
 }
 
-// ========= PREMIUM PLAN + WEEKLY AI ALLOWANCE ========= //
-// Free households share ONE pool of AI actions per calendar week across every
-// AI feature (summed from the ai_usage ledger). Premium households skip the
-// weekly pool entirely (the per-action 6h burst ceiling in the controllers
-// still applies to everyone as a fair-use / abuse guard). The week boundary is
-// Monday 00:00 Europe/London — a fixed app timezone, so we don't need each
-// user's local zone to match the "resets Monday / this week" allowance copy.
+// ========= ENTITLEMENT: PLAN, TRIAL, CREDITS ========= //
+// Everything a request needs to know about a household's plan, in one read:
+// the effective plan (premium / trial / free), the credit allowance for that
+// plan (snapshotted on the row, migration 016), the current anniversary
+// period (credit_period() in SQL — the only implementation of that maths) and
+// the credits already used in it. The rules that turn the row into answers are
+// pure and unit-tested in lib/credits.js.
+//
+// "Used" sums this period's settled rows plus fresh in-flight ones (a 'pending'
+// row older than ten minutes is a crashed request, not a live one). Failed and
+// refunded rows carry credits = 0 and fall out by themselves; 'aisle', 'parse'
+// and 'usuals' are opened with 0 credits and never count.
 
-const WEEKLY_AI_LIMIT = 15;
+const LIVE_CREDITS_SQL = `
+    SELECT COALESCE(SUM(u.credits), 0)::int
+    FROM ai_usage u
+    WHERE u.household_id = h.id
+      AND u.created_at >= p.period_start
+      AND (u.status = 'ok'
+           OR (u.status = 'pending' AND u.created_at > now() - interval '10 minutes'))`;
 
-// Effective entitlement: 'premium' only while the plan is premium AND any
-// premium_until (set on cancellation to the paid-through date) is in the future.
-async function getHouseholdPlan(householdId) {
-    const { rows } = await pool.query(
-        `SELECT CASE
-                    WHEN plan = 'premium'
-                     AND (premium_until IS NULL OR premium_until > now())
-                    THEN 'premium' ELSE 'free'
-                END AS plan
-         FROM household
+async function getEntitlement(householdId, q = pool) {
+    const { getConfig } = require("../lib/config");
+    const { buildEntitlement } = require("../lib/credits");
+    const [cfg, { rows }] = await Promise.all([
+        getConfig(),
+        q.query(
+            `SELECT h.plan, h.premium_until, h.trial_ends_at,
+                    h.credit_allowance, h.premium_credit_allowance, h.credit_weights,
+                    h.member_limit, h.credit_anchor_at, h.founder, h.billing_interval,
+                    h.stripe_subscription_id, h.premium_payer_user_id,
+                    p.period_start, p.period_end, p.period_index,
+                    (${LIVE_CREDITS_SQL}) AS credits_used
+             FROM household h
+             CROSS JOIN LATERAL credit_period(COALESCE(h.credit_anchor_at, h.created_at)) p
+             WHERE h.id = $1`,
+            [householdId],
+        ),
+    ]);
+    const row = rows[0];
+    if (!row) return buildEntitlement(null, null, 0, cfg);
+    const ent = buildEntitlement(row, row, row.credits_used, cfg);
+    ent.householdId = householdId;
+    ent.stripeSubscriptionId = row.stripe_subscription_id ?? null;
+    ent.premiumPayerUserId = row.premium_payer_user_id ?? null;
+    return ent;
+}
+
+// Reserve `credits` for an action, atomically per household: an advisory lock
+// serialises concurrent reservations so two requests can't both see room for
+// the last credit. On success the ai_usage row is inserted 'pending' (already
+// counting against the allowance) and its id returned; on refusal a
+// 'rejected' row is written (credits 0) so ceiling hits are measurable.
+// The model call happens OUTSIDE this transaction — it is milliseconds long.
+async function reserveCredits({ householdId, userId = null, action, credits, planAt, meta = null }) {
+    const { canAfford } = require("../lib/credits");
+    return withTransaction(async (client) => {
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [householdId]);
+        const ent = await getEntitlement(householdId, client);
+        if (!canAfford(ent, credits)) {
+            await client.query(
+                `INSERT INTO ai_usage (household_id, user_id, action, credits, status, plan_at, settled_at, meta)
+                 VALUES ($1, $2, $3, 0, 'rejected', $4, now(), $5)`,
+                [householdId, userId, action, planAt ?? ent.plan, JSON.stringify({ ...(meta || {}), wanted: credits })],
+            );
+            return { ok: false, id: null, entitlement: ent };
+        }
+        const { rows } = await client.query(
+            `INSERT INTO ai_usage (household_id, user_id, action, credits, status, plan_at, meta)
+             VALUES ($1, $2, $3, $4, 'pending', $5, $6)
+             RETURNING id`,
+            [householdId, userId, action, credits, planAt ?? ent.plan, meta ? JSON.stringify(meta) : null],
+        );
+        ent.credits.used += credits;
+        if (ent.credits.remaining != null) ent.credits.remaining = Math.max(0, ent.credits.remaining - credits);
+        return { ok: true, id: rows[0].id, entitlement: ent };
+    });
+}
+
+// Comps: premium with no Stripe subscription and no credit ceiling.
+async function setHouseholdComp(householdId, comped) {
+    const { getConfig } = require("../lib/config");
+    const cfg = await getConfig();
+    await pool.query(
+        `UPDATE household SET
+             plan = $2, premium_until = NULL,
+             stripe_subscription_id = NULL, premium_payer_user_id = NULL,
+             premium_credit_allowance = $3
          WHERE id = $1`,
-        [householdId],
+        [householdId, comped ? "premium" : "free", comped ? null : cfg.premium_credit_allowance],
     );
-    return rows[0]?.plan ?? "free";
-}
-
-// Credits used this week and when the window resets, in one query. Sums the
-// ledger's settled rows plus fresh in-flight ones (a 'pending' row older than
-// ten minutes is a crashed request, not a live one). Failed and refunded rows
-// carry credits = 0, so they fall out of the sum by themselves; 'usuals' and
-// 'parse' rows are opened with 0 credits and never count.
-async function getWeeklyAiUsage(householdId) {
-    const { rows } = await pool.query(
-        `SELECT
-             COALESCE(SUM(credits), 0)::int AS used,
-             (date_trunc('week', now() AT TIME ZONE 'Europe/London') + interval '7 days')
-                 AT TIME ZONE 'Europe/London' AS resets_at
-         FROM ai_usage
-         WHERE household_id = $1
-           AND (status = 'ok'
-                OR (status = 'pending' AND created_at > now() - interval '10 minutes'))
-           AND created_at >= (date_trunc('week', now() AT TIME ZONE 'Europe/London'))
-                                 AT TIME ZONE 'Europe/London'`,
-        [householdId],
-    );
-    return { used: rows[0].used, resetsAt: rows[0].resets_at };
-}
-
-// One call for both enforcement (controllers) and display (GET /shopping-list).
-// Premium → always ok, unlimited. Free → ok while under the weekly pool.
-async function checkWeeklyAllowance(householdId) {
-    const plan = await getHouseholdPlan(householdId);
-    if (plan === "premium") {
-        return { ok: true, plan, used: 0, limit: WEEKLY_AI_LIMIT, resetsAt: null };
-    }
-    const { used, resetsAt } = await getWeeklyAiUsage(householdId);
-    return { ok: used < WEEKLY_AI_LIMIT, plan, used, limit: WEEKLY_AI_LIMIT, resetsAt };
 }
 
 // ========= PREMIUM SUBSCRIPTION → HOUSEHOLD ========= //
@@ -1081,6 +1163,7 @@ async function setHouseholdPremiumFromSubscription({
     periodEnd = null,
     stripeCustomerId = null,
     stripeSubscriptionId = null,
+    billingInterval = null,
 }) {
     const { rows } = await pool.query(
         "SELECT household_id FROM household_member WHERE user_id = $1",
@@ -1095,7 +1178,8 @@ async function setHouseholdPremiumFromSubscription({
              premium_until          = $3,
              stripe_customer_id     = COALESCE($4, stripe_customer_id),
              stripe_subscription_id = $5,
-             premium_payer_user_id  = $6
+             premium_payer_user_id  = $6,
+             billing_interval       = $7
          WHERE id = $1`,
         [
             householdId,
@@ -1104,6 +1188,7 @@ async function setHouseholdPremiumFromSubscription({
             stripeCustomerId,
             isPremium ? stripeSubscriptionId : null,
             isPremium ? userId : null,
+            isPremium ? billingInterval : null,
         ],
     );
 }
@@ -1271,15 +1356,16 @@ module.exports = {
     setRecipeFavorite,
     deleteProductItemBoth,
     getCustomProductByName,
-    insertAiUsage,
     settleAiUsage,
     recordAiRejected,
     countRecentUsage,
     recordUserActivity,
-    WEEKLY_AI_LIMIT,
-    getHouseholdPlan,
-    getWeeklyAiUsage,
-    checkWeeklyAllowance,
+    withTransaction,
+    withStatus,
+    insertHousehold,
+    getEntitlement,
+    reserveCredits,
+    setHouseholdComp,
     setHouseholdPremiumFromSubscription,
     clearHouseholdPremiumByPayer,
     getOrCreateShareToken,
