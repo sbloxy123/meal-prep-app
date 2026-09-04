@@ -69,8 +69,15 @@ app.get("/", (req, res) => res.json({ status: "ok" }));
 app.use((err, req, res, next) => {
     console.error(err);
     // Controllers/queries can throw errors carrying an HTTP status (e.g. an
-    // expired invite → 410); fall back to 500 for anything unexpected.
-    res.status(err.status || 500).json({ error: err.message ?? "Internal server error" });
+    // expired invite → 410); fall back to 500 for anything unexpected. When
+    // the error also carries a machine `code` (db.withStatus(msg, status,
+    // code) — HOUSEHOLD_LIMIT, PREMIUM_MERGE…) it goes in `error`, the field
+    // the frontend branches on, and the human text in `message` — the same
+    // shape as the AI endpoints' 429s.
+    const message = err.message ?? "Internal server error";
+    res.status(err.status || 500).json(
+        err.code ? { error: err.code, message } : { error: message },
+    );
 });
 
 const PORT = process.env.PORT || 3001;

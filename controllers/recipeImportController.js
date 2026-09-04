@@ -838,7 +838,7 @@ Give realistic quantities in the ingredient names and estimate the per-serving m
 // onboarding, so two things are deliberate:
 //
 //   1. It is FREE. Its ai_usage row is opened with credits = 0 (so it is
-//      measured — tokens, cost, latency — but never charged; getWeeklyAiUsage
+//      measured — tokens, cost, latency — but never charged; the allowance
 //      sums credits, not rows). Fair use is bounded by a per-household daily
 //      run counter instead.
 //   2. We do NOT apply the household's dietary answers. Someone who ticked

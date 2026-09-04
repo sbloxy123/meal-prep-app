@@ -48,7 +48,7 @@ async function createShoppingList(req, res, next) {
 async function getShoppingList(req, res, next) {
     try {
         const householdId = req.householdId;
-        const [shoppingList, allRecipesOnMenu, singleRecipeIngredients, singleRecipeTags, allTags, shoppingListIngredientsByRecipe, householdMemberCount, allowance, onboarding] =
+        const [shoppingList, allRecipesOnMenu, singleRecipeIngredients, singleRecipeTags, allTags, shoppingListIngredientsByRecipe, householdMemberCount, entitlement, onboarding] =
             await Promise.all([
                 db.getShoppingListItems(householdId),
                 db.allRecipesOnMenu(householdId),
@@ -57,9 +57,12 @@ async function getShoppingList(req, res, next) {
                 db.getAllTags(householdId),
                 db.getShoppingListIngredientsByRecipe(householdId),
                 db.getHouseholdMemberCount(householdId),
-                db.checkWeeklyAllowance(householdId),
+                db.getEntitlement(householdId),
                 db.getOnboardingState(householdId, req.user.id),
             ]);
+
+        // Strip the server-only fields before this goes to the browser.
+        const { householdId: _hh, stripeSubscriptionId: _sub, premiumPayerUserId: _payer, ...publicEntitlement } = entitlement;
 
         res.json({
             shoppingList,
@@ -69,11 +72,18 @@ async function getShoppingList(req, res, next) {
             allTags,
             shoppingListIngredientsByRecipe,
             householdMemberCount,
-            // Premium entitlement + weekly AI allowance for the whole app to read.
-            plan: allowance.plan,
-            aiUsedThisWeek: allowance.used,
-            aiWeeklyLimit: allowance.limit,
-            weekResetsAt: allowance.resetsAt,
+            // Plan, trial and credits for the whole app to read (lib/credits.js
+            // buildEntitlement shape).
+            entitlement: publicEntitlement,
+            // Compatibility for the frontend release before `entitlement`
+            // shipped: it derives `exhausted` from these and would otherwise
+            // fall back to a 15-per-week limit and disable every AI button.
+            // trial reads as 'premium' there (it only knows two plans). Drop
+            // in the cleanup PR once the credits frontend is live.
+            plan: entitlement.plan === "free" ? "free" : "premium",
+            aiUsedThisWeek: entitlement.credits.used,
+            aiWeeklyLimit: entitlement.credits.allowance ?? 1_000_000_000,
+            weekResetsAt: entitlement.credits.resetsAt,
             // Onboarding questionnaire state — this response is the app's one
             // "chrome" fetch, so the wizard's trigger rides it for free.
             //
