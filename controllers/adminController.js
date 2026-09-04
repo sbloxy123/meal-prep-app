@@ -713,7 +713,10 @@ async function creditStats(req, res, next) {
                     (SELECT COUNT(*)::int FROM app_events WHERE type = 'trial_prompt' AND meta->>'channel' = 'app'
                        AND created_at >= now() - ($1::int || ' days')::interval) AS cards_in_range,
                     (SELECT COUNT(*)::int FROM app_events WHERE type = 'household_limit_hit'
-                       AND created_at >= now() - ($1::int || ' days')::interval) AS household_limit_hits
+                       AND created_at >= now() - ($1::int || ' days')::interval) AS household_limit_hits,
+                    COUNT(*) FILTER (WHERE founder)::int AS founders,
+                    COUNT(*) FILTER (WHERE plan = 'premium' AND stripe_subscription_id IS NOT NULL AND billing_interval = 'year')::int AS annual_subs,
+                    COUNT(*) FILTER (WHERE plan = 'premium' AND stripe_subscription_id IS NOT NULL AND billing_interval = 'month')::int AS monthly_subs
                  FROM household`,
                 [days],
             ),
@@ -762,6 +765,7 @@ async function creditStats(req, res, next) {
             // Owners who tried to invite past their free-tier seats — the
             // retention-side paywall firing.
             householdLimitHits: Number(t.household_limit_hits),
+            subscriptions: { monthly: Number(t.monthly_subs), annual: Number(t.annual_subs), founders: Number(t.founders) },
             rejections: { count: Number(rj.rejections), households: Number(rj.households) },
             generated_at: new Date().toISOString(),
         });

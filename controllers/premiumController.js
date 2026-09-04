@@ -13,4 +13,19 @@ async function logCta(req, res) {
     res.json({ ok: true });
 }
 
-module.exports = { logCta };
+// GET /premium/offers — what the upgrade page can sell right now.
+async function offers(req, res, next) {
+    try {
+        const { getOffers } = require("../lib/offers");
+        const o = await getOffers();
+        res.json({
+            monthly: o.monthly,
+            annual: o.annual,
+            founders: { available: o.founders.available, remaining: o.founders.remaining, cap: o.founders.cap },
+        });
+    } catch (error) {
+        next(error);
+    }
+}
+
+module.exports = { logCta, offers };
