@@ -2,6 +2,7 @@
 // directly (rather than growing db/queries.js) since nothing here is reused.
 // All aggregates are over existing tables + app_events + ai_usage. No writes.
 const pool = require("../db/pool");
+const db = require("../db/queries");
 
 const ALLOWED_DAYS = [7, 30, 90, 365];
 
@@ -613,6 +614,151 @@ async function aiStats(req, res, next) {
     }
 }
 
+// ===== Config (admin writes) =====
+// The knobs in app_config (lib/config.js): trial length, allowances, weights,
+// free-tier household size, founders' offer. A change applies to households
+// created afterwards; existing ones keep their snapshot.
+
+// GET /admin/config
+async function getConfigHandler(req, res, next) {
+    try {
+        const { getConfigWithMeta, DEFAULTS } = require("../lib/config");
+        const { cfg, meta } = await getConfigWithMeta();
+        res.json({ config: cfg, meta, defaults: DEFAULTS });
+    } catch (error) {
+        next(error);
+    }
+}
+
+// PUT /admin/config { key, value }
+async function putConfigHandler(req, res, next) {
+    try {
+        const { setConfig, getConfigWithMeta } = require("../lib/config");
+        const key = typeof req.body?.key === "string" ? req.body.key : "";
+        if (!key || !("value" in (req.body ?? {}))) {
+            return res.status(400).json({ error: "key and value are required." });
+        }
+        await setConfig(key, req.body.value, req.user.email);
+        db.recordEvent("config_changed", {
+            userId: req.user.id,
+            meta: { key, value: req.body.value, by: req.user.email },
+        });
+        const { cfg, meta } = await getConfigWithMeta();
+        res.json({ config: cfg, meta });
+    } catch (error) {
+        if (error.status === 400) return res.status(400).json({ error: error.message });
+        next(error);
+    }
+}
+
+// GET /admin/credits?days=30 — the credit model in numbers: how households are
+// spread across their allowance this period, how many are at the ceiling, and
+// the trial funnel. Per-household usage is computed with the same
+// credit_period() + live-credit sum the entitlement check uses.
+async function creditStats(req, res, next) {
+    try {
+        let days = parseInt(req.query.days, 10);
+        if (!ALLOWED_DAYS.includes(days)) days = 30;
+
+        const [householdsRes, trialRes, rejectedRes] = await Promise.all([
+            pool.query(`
+                WITH hh AS (
+                    SELECT h.id,
+                           CASE
+                               WHEN h.plan = 'premium' AND (h.premium_until IS NULL OR h.premium_until > now()) THEN 'premium'
+                               WHEN h.trial_ends_at > now() THEN 'trial'
+                               ELSE 'free'
+                           END AS plan,
+                           CASE
+                               WHEN h.plan = 'premium' AND (h.premium_until IS NULL OR h.premium_until > now()) THEN h.premium_credit_allowance
+                               WHEN h.trial_ends_at > now() THEN h.premium_credit_allowance
+                               ELSE h.credit_allowance
+                           END AS allowance,
+                           p.period_start, p.period_end,
+                           (SELECT COALESCE(SUM(u.credits), 0)::int FROM ai_usage u
+                             WHERE u.household_id = h.id AND u.created_at >= p.period_start
+                               AND (u.status = 'ok' OR (u.status = 'pending' AND u.created_at > now() - interval '10 minutes'))) AS used
+                    FROM household h
+                    CROSS JOIN LATERAL credit_period(COALESCE(h.credit_anchor_at, h.created_at)) p
+                )
+                SELECT plan,
+                       COUNT(*)::int AS households,
+                       COUNT(*) FILTER (WHERE used > 0)::int AS active,
+                       COUNT(*) FILTER (WHERE allowance IS NOT NULL AND used >= allowance)::int AS at_ceiling,
+                       COUNT(*) FILTER (WHERE allowance IS NOT NULL AND used >= allowance * 0.8)::int AS near_ceiling,
+                       COALESCE(AVG(used), 0)::float AS avg_used,
+                       COALESCE(percentile_cont(0.5)  WITHIN GROUP (ORDER BY used), 0)::float AS p50,
+                       COALESCE(percentile_cont(0.75) WITHIN GROUP (ORDER BY used), 0)::float AS p75,
+                       COALESCE(percentile_cont(0.9)  WITHIN GROUP (ORDER BY used), 0)::float AS p90,
+                       COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY used), 0)::float AS p95,
+                       MAX(used)::int AS max_used,
+                       COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY used) FILTER (WHERE used > 0), 0)::float AS p50_active,
+                       COALESCE(percentile_cont(0.9) WITHIN GROUP (ORDER BY used) FILTER (WHERE used > 0), 0)::float AS p90_active
+                FROM hh
+                GROUP BY plan
+                ORDER BY plan
+            `),
+            pool.query(
+                `SELECT
+                    COUNT(*) FILTER (WHERE trial_ends_at > now())::int AS active,
+                    COUNT(*) FILTER (WHERE trial_ends_at <= now() AND plan <> 'premium')::int AS expired_free,
+                    COUNT(*) FILTER (WHERE trial_ends_at IS NOT NULL AND plan = 'premium' AND stripe_subscription_id IS NOT NULL)::int AS paying,
+                    COUNT(*) FILTER (WHERE trial_ends_at > now() AND trial_ends_at <= now() + interval '4 days')::int AS ending_soon,
+                    (SELECT COUNT(*)::int FROM app_events WHERE type = 'trial_started'
+                       AND created_at >= now() - ($1::int || ' days')::interval) AS started_in_range,
+                    (SELECT COUNT(*)::int FROM app_events WHERE type = 'trial_converted'
+                       AND created_at >= now() - ($1::int || ' days')::interval) AS converted_in_range
+                 FROM household`,
+                [days],
+            ),
+            pool.query(
+                `SELECT COUNT(*)::int AS rejections,
+                        COUNT(DISTINCT household_id)::int AS households
+                 FROM ai_usage
+                 WHERE status = 'rejected'
+                   AND created_at >= now() - ($1::int || ' days')::interval`,
+                [days],
+            ),
+        ]);
+
+        const byPlan = {};
+        for (const r of householdsRes.rows) {
+            byPlan[r.plan] = {
+                households: Number(r.households),
+                active: Number(r.active),
+                atCeiling: Number(r.at_ceiling),
+                nearCeiling: Number(r.near_ceiling),
+                avgUsed: Math.round(Number(r.avg_used) * 10) / 10,
+                p50: Math.round(Number(r.p50) * 10) / 10,
+                p75: Math.round(Number(r.p75) * 10) / 10,
+                p90: Math.round(Number(r.p90) * 10) / 10,
+                p95: Math.round(Number(r.p95) * 10) / 10,
+                max: Number(r.max_used),
+                p50Active: Math.round(Number(r.p50_active) * 10) / 10,
+                p90Active: Math.round(Number(r.p90_active) * 10) / 10,
+            };
+        }
+        const t = trialRes.rows[0];
+        const rj = rejectedRes.rows[0];
+        res.json({
+            days,
+            byPlan,
+            trial: {
+                active: Number(t.active),
+                endingSoon: Number(t.ending_soon),
+                expiredFree: Number(t.expired_free),
+                paying: Number(t.paying),
+                startedInRange: Number(t.started_in_range),
+                convertedInRange: Number(t.converted_in_range),
+            },
+            rejections: { count: Number(rj.rejections), households: Number(rj.households) },
+            generated_at: new Date().toISOString(),
+        });
+    } catch (error) {
+        next(error);
+    }
+}
+
 // ===== Premium comps (admin writes) =====
 // Entitlement is household.plan, so a "comp" is just a premium household with no
 // Stripe subscription — nothing overwrites it (the Stripe callbacks only touch
@@ -661,10 +807,12 @@ async function grantPremium(req, res, next) {
         const householdId = await householdIdForEmail(email);
         if (!householdId) return res.status(404).json({ error: "No account with that email." });
 
-        // Comp = premium with no expiry. Leaves any Stripe fields untouched, so a
-        // real paying household simply stays premium.
+        // Comp = premium with no expiry and no credit ceiling. Leaves any Stripe
+        // fields untouched, so a real paying household simply stays premium.
         await pool.query(
-            "UPDATE household SET plan = 'premium', premium_until = NULL WHERE id = $1",
+            `UPDATE household
+             SET plan = 'premium', premium_until = NULL, premium_credit_allowance = NULL
+             WHERE id = $1`,
             [householdId],
         );
         await pool.query(
@@ -700,7 +848,8 @@ async function revokePremium(req, res, next) {
 
         await pool.query(
             `UPDATE household
-             SET plan = 'free', premium_until = NULL, premium_payer_user_id = NULL
+             SET plan = 'free', premium_until = NULL, premium_payer_user_id = NULL,
+                 premium_credit_allowance = (SELECT (value)::int FROM app_config WHERE key = 'premium_credit_allowance')
              WHERE id = $1`,
             [householdId],
         );
@@ -715,4 +864,14 @@ async function revokePremium(req, res, next) {
     }
 }
 
-module.exports = { overview, users, aiStats, comps, grantPremium, revokePremium };
+module.exports = {
+    overview,
+    users,
+    aiStats,
+    creditStats,
+    getConfig: getConfigHandler,
+    putConfig: putConfigHandler,
+    comps,
+    grantPremium,
+    revokePremium,
+};
