@@ -1,9 +1,32 @@
 // Read-only admin analytics. Self-contained: queries run against the pool
 // directly (rather than growing db/queries.js) since nothing here is reused.
-// All aggregates are over existing tables + app_events. No writes.
+// All aggregates are over existing tables + app_events + ai_usage. No writes.
 const pool = require("../db/pool");
 
 const ALLOWED_DAYS = [7, 30, 90, 365];
+
+// Every action the AI ledger records (migration 015). The dashboard shows them
+// all — the old recipe_imports rollup silently dropped social + aisle, so the
+// "AI calls" number under-counted real spend.
+const AI_ACTIONS = ["import", "estimate", "generate", "photo", "improve", "suggest", "social", "aisle", "parse", "usuals"];
+
+// One COUNT(*) FILTER column per action, e.g. for a daily stacked series.
+function aiActionFilters(alias) {
+    return AI_ACTIONS.map(
+        (a) => `COUNT(*) FILTER (WHERE ${alias}.action = '${a}' AND ${alias}.status <> 'rejected')::int AS "${a}"`,
+    ).join(",\n                        ");
+}
+
+function actionCounts(row) {
+    const out = {};
+    let total = 0;
+    for (const a of AI_ACTIONS) {
+        out[a] = Number(row?.[a] ?? 0);
+        total += out[a];
+    }
+    out.total = total;
+    return out;
+}
 
 // Daily date axis so empty days show as zero (nicer charts). $1 = days.
 const DAYS_CTE = `
@@ -27,7 +50,7 @@ async function overview(req, res, next) {
         let days = parseInt(req.query.days, 10);
         if (!ALLOWED_DAYS.includes(days)) days = 30;
 
-        const [totalsRes, aiRes, invitesRes, macrosRes, tagsRes, deviceRes, onboardingRes, installRes, unverifiedRes] =
+        const [totalsRes, aiRes, invitesRes, macrosRes, tagsRes, deviceRes, onboardingRes, installRes, unverifiedRes, retentionRes, sizesRes] =
             await Promise.all([
                 pool.query(`
                     SELECT
@@ -46,7 +69,11 @@ async function overview(req, res, next) {
                         (SELECT COUNT(*) FROM household WHERE plan = 'premium' AND stripe_subscription_id IS NULL)::int AS comped_households
                 `),
                 pool.query(
-                    `SELECT action, COUNT(*)::int AS n FROM recipe_imports
+                    `SELECT action,
+                            COUNT(*) FILTER (WHERE status <> 'rejected')::int AS n,
+                            COALESCE(SUM(cost_pence), 0)::float AS cost_pence,
+                            COALESCE(SUM(cost_usd), 0)::float   AS cost_usd
+                     FROM ai_usage
                      WHERE created_at >= now() - ($1::int || ' days')::interval
                      GROUP BY action`,
                     [days],
@@ -133,15 +160,74 @@ async function overview(req, res, next) {
                      GROUP BY major
                      ORDER BY major DESC`,
                 ),
+                // Classic day-N retention: of users who signed up in the window
+                // (and after user_activity started recording), how many made an
+                // authenticated request on exactly day 1 / 7 / 30. A user only
+                // counts as eligible once that day has passed.
+                pool.query(
+                    `WITH first_day AS (SELECT MIN(day) AS d FROM user_activity),
+                          today AS (SELECT (now() AT TIME ZONE 'Europe/London')::date AS d),
+                          cohort AS (
+                              SELECT u.id, (u."createdAt" AT TIME ZONE 'Europe/London')::date AS d0
+                              FROM "user" u, first_day f
+                              WHERE u."createdAt" >= now() - ($1::int || ' days')::interval
+                                AND f.d IS NOT NULL
+                                AND (u."createdAt" AT TIME ZONE 'Europe/London')::date >= f.d
+                          )
+                     SELECT
+                        COUNT(*)::int AS cohort,
+                        COUNT(*) FILTER (WHERE c.d0 + 1  <= t.d)::int AS eligible_d1,
+                        COUNT(*) FILTER (WHERE c.d0 + 7  <= t.d)::int AS eligible_d7,
+                        COUNT(*) FILTER (WHERE c.d0 + 30 <= t.d)::int AS eligible_d30,
+                        COUNT(*) FILTER (WHERE c.d0 + 1  <= t.d AND EXISTS
+                            (SELECT 1 FROM user_activity a WHERE a.user_id = c.id AND a.day = c.d0 + 1))::int  AS retained_d1,
+                        COUNT(*) FILTER (WHERE c.d0 + 7  <= t.d AND EXISTS
+                            (SELECT 1 FROM user_activity a WHERE a.user_id = c.id AND a.day = c.d0 + 7))::int  AS retained_d7,
+                        COUNT(*) FILTER (WHERE c.d0 + 30 <= t.d AND EXISTS
+                            (SELECT 1 FROM user_activity a WHERE a.user_id = c.id AND a.day = c.d0 + 30))::int AS retained_d30,
+                        -- "Still around": active at any point in days 1..N. Softer than
+                        -- the classic number, closer to what a user feels like.
+                        COUNT(*) FILTER (WHERE c.d0 + 7  <= t.d AND EXISTS
+                            (SELECT 1 FROM user_activity a WHERE a.user_id = c.id AND a.day BETWEEN c.d0 + 1 AND c.d0 + 7))::int  AS rolling_d7,
+                        COUNT(*) FILTER (WHERE c.d0 + 30 <= t.d AND EXISTS
+                            (SELECT 1 FROM user_activity a WHERE a.user_id = c.id AND a.day BETWEEN c.d0 + 1 AND c.d0 + 30))::int AS rolling_d30
+                     FROM cohort c, today t`,
+                    [days],
+                ),
+                pool.query(
+                    `SELECT member_count::int AS size, COUNT(*)::int AS households
+                     FROM (SELECT household_id, COUNT(*) AS member_count
+                           FROM household_member GROUP BY household_id) x
+                     GROUP BY member_count ORDER BY member_count`,
+                ),
             ]);
 
         const t = totalsRes.rows[0];
 
-        const ai = { import: 0, estimate: 0, generate: 0, photo: 0, improve: 0, suggest: 0 };
+        const ai = actionCounts({});
+        const aiCost = { pence: 0, usd: 0, byAction: {} };
         for (const r of aiRes.rows) {
-            if (r.action in ai) ai[r.action] = Number(r.n);
+            if (r.action in ai) {
+                ai[r.action] = Number(r.n);
+                ai.total += Number(r.n);
+            }
+            aiCost.byAction[r.action] = Number(r.cost_pence);
+            aiCost.pence += Number(r.cost_pence);
+            aiCost.usd += Number(r.cost_usd);
         }
-        ai.total = ai.import + ai.estimate + ai.generate + ai.photo + ai.improve + ai.suggest;
+        aiCost.pence = Math.round(aiCost.pence * 100) / 100;
+        aiCost.usd = Math.round(aiCost.usd * 1e4) / 1e4;
+
+        const rt = retentionRes.rows[0];
+        const rate = (num, den) => (den > 0 ? Math.round((num / den) * 1000) / 10 : null);
+        const retention = {
+            cohort: Number(rt.cohort),
+            d1: { eligible: Number(rt.eligible_d1), retained: Number(rt.retained_d1), rate: rate(rt.retained_d1, rt.eligible_d1) },
+            d7: { eligible: Number(rt.eligible_d7), retained: Number(rt.retained_d7), rate: rate(rt.retained_d7, rt.eligible_d7), rolling: rate(rt.rolling_d7, rt.eligible_d7) },
+            d30: { eligible: Number(rt.eligible_d30), retained: Number(rt.retained_d30), rate: rate(rt.retained_d30, rt.eligible_d30), rolling: rate(rt.rolling_d30, rt.eligible_d30) },
+        };
+
+        const householdSizes = sizesRes.rows.map((r) => ({ size: Number(r.size), households: Number(r.households) }));
 
         const macrosSource = {};
         for (const r of macrosRes.rows) macrosSource[r.macros_source] = Number(r.n);
@@ -209,13 +295,9 @@ async function overview(req, res, next) {
                 pool.query(
                     `${DAYS_CTE}
                      SELECT d.d::text AS date,
-                        COUNT(*) FILTER (WHERE ri.action = 'import')::int   AS import,
-                        COUNT(*) FILTER (WHERE ri.action = 'estimate')::int AS estimate,
-                        COUNT(*) FILTER (WHERE ri.action = 'generate')::int AS generate,
-                        COUNT(*) FILTER (WHERE ri.action = 'photo')::int    AS photo,
-                        COUNT(*) FILTER (WHERE ri.action = 'improve')::int  AS improve,
-                        COUNT(*) FILTER (WHERE ri.action = 'suggest')::int  AS suggest
-                     FROM days d LEFT JOIN recipe_imports ri ON ri.created_at::date = d.d
+                        ${aiActionFilters("ai")},
+                        COALESCE(SUM(ai.cost_pence), 0)::float AS cost_pence
+                     FROM days d LEFT JOIN ai_usage ai ON ai.created_at::date = d.d
                      GROUP BY d.d ORDER BY d.d`,
                     [days],
                 ),
@@ -248,17 +330,10 @@ async function overview(req, res, next) {
                 ),
             ]);
 
-        const aiCalls = aiCallsRows.rows.map((r) => ({
-            date: r.date,
-            values: {
-                import: Number(r.import),
-                estimate: Number(r.estimate),
-                generate: Number(r.generate),
-                photo: Number(r.photo),
-                improve: Number(r.improve),
-                suggest: Number(r.suggest),
-            },
-        }));
+        const aiCalls = aiCallsRows.rows.map((r) => {
+            const { total, ...values } = actionCounts(r);
+            return { date: r.date, values, count: total, costPence: Number(r.cost_pence) };
+        });
 
         res.json({
             days,
@@ -275,6 +350,9 @@ async function overview(req, res, next) {
                 paidHouseholds: t.paid_households,
                 compedHouseholds: t.comped_households,
                 aiCalls: ai,
+                aiCost,
+                retention,
+                householdSizes,
                 invitesSent: inv.sent,
                 invitesAccepted: inv.accepted,
                 invitesPending: inv.pending,
@@ -308,12 +386,7 @@ async function users(req, res, next) {
                 h.plan AS household_plan,
                 (h.stripe_subscription_id IS NOT NULL) AS household_paid,
                 COALESCE(rc.recipe_count, 0)   AS recipe_count,
-                COALESCE(ai.import_count, 0)   AS ai_import,
-                COALESCE(ai.estimate_count, 0) AS ai_estimate,
-                COALESCE(ai.generate_count, 0) AS ai_generate,
-                COALESCE(ai.photo_count, 0)    AS ai_photo,
-                COALESCE(ai.improve_count, 0)  AS ai_improve,
-                COALESCE(ai.suggest_count, 0)  AS ai_suggest,
+                to_jsonb(ai)                   AS ai_usage_json,
                 COALESCE(sh.shares_created, 0) AS shares_created,
                 COALESCE(ev.week_adds, 0)      AS week_adds,
                 COALESCE(ev.lists_generated, 0) AS lists_generated
@@ -334,13 +407,10 @@ async function users(req, res, next) {
             ) rc ON true
             LEFT JOIN LATERAL (
                 SELECT
-                    COUNT(*) FILTER (WHERE action = 'import')   AS import_count,
-                    COUNT(*) FILTER (WHERE action = 'estimate') AS estimate_count,
-                    COUNT(*) FILTER (WHERE action = 'generate') AS generate_count,
-                    COUNT(*) FILTER (WHERE action = 'photo')    AS photo_count,
-                    COUNT(*) FILTER (WHERE action = 'improve')  AS improve_count,
-                    COUNT(*) FILTER (WHERE action = 'suggest')  AS suggest_count
-                FROM recipe_imports ri WHERE ri.household_id = hm.household_id
+                    ${aiActionFilters("ai")},
+                    COALESCE(SUM(ai.cost_pence), 0)::float AS cost_pence,
+                    COALESCE(SUM(ai.credits), 0)::int      AS credits
+                FROM ai_usage ai WHERE ai.household_id = hm.household_id
             ) ai ON true
             LEFT JOIN LATERAL (
                 SELECT COUNT(*) AS shares_created FROM recipe_shares rs WHERE rs.created_by = u.id
@@ -370,24 +440,173 @@ async function users(req, res, next) {
                 paid: r.household_paid ?? false,
                 recipe_count: Number(r.recipe_count),
                 ai_usage: {
-                    import: Number(r.ai_import),
-                    estimate: Number(r.ai_estimate),
-                    generate: Number(r.ai_generate),
-                    photo: Number(r.ai_photo),
-                    improve: Number(r.ai_improve),
-                    suggest: Number(r.ai_suggest),
-                    total:
-                        Number(r.ai_import) +
-                        Number(r.ai_estimate) +
-                        Number(r.ai_generate) +
-                        Number(r.ai_photo) +
-                        Number(r.ai_improve) +
-                        Number(r.ai_suggest),
+                    ...actionCounts(r.ai_usage_json),
+                    cost_pence: Number(r.ai_usage_json?.cost_pence ?? 0),
+                    credits: Number(r.ai_usage_json?.credits ?? 0),
                 },
                 shares_created: Number(r.shares_created),
                 week_adds: Number(r.week_adds),
                 lists_generated: Number(r.lists_generated),
             })),
+        });
+    } catch (error) {
+        next(error);
+    }
+}
+
+// GET /admin/ai?days=30 — the AI ledger, sliced for the cost & latency panel.
+// Everything comes from ai_usage (migration 015). Legacy rows backfilled from
+// recipe_imports carry no tokens/cost/latency and are reported separately so
+// the averages aren't dragged down by zeros.
+async function aiStats(req, res, next) {
+    try {
+        let days = parseInt(req.query.days, 10);
+        if (!ALLOWED_DAYS.includes(days)) days = 30;
+
+        const [byActionRes, byModelRes, outcomesRes, householdsRes, dailyRes, legacyRes] = await Promise.all([
+            pool.query(
+                `SELECT action,
+                        COUNT(*) FILTER (WHERE status <> 'rejected')::int                         AS actions,
+                        COUNT(*) FILTER (WHERE status = 'ok' AND credits > 0)::int                AS charged,
+                        COUNT(*) FILTER (WHERE status = 'ok' AND credits = 0
+                                           AND meta ? 'outcome')::int                             AS refunded,
+                        COUNT(*) FILTER (WHERE status = 'failed')::int                            AS failed,
+                        COUNT(*) FILTER (WHERE status = 'rejected')::int                          AS rejected,
+                        COUNT(*) FILTER (WHERE status = 'pending'
+                                           AND created_at < now() - interval '10 minutes')::int   AS stale,
+                        COALESCE(SUM(calls), 0)::int                                              AS model_calls,
+                        COALESCE(SUM(credits), 0)::int                                            AS credits,
+                        COALESCE(SUM(input_tokens), 0)::bigint                                    AS input_tokens,
+                        COALESCE(SUM(output_tokens), 0)::bigint                                   AS output_tokens,
+                        COALESCE(SUM(cache_read_tokens), 0)::bigint                               AS cache_read_tokens,
+                        COALESCE(SUM(cost_usd), 0)::float                                         AS cost_usd,
+                        COALESCE(SUM(cost_pence), 0)::float                                       AS cost_pence,
+                        percentile_cont(0.5)  WITHIN GROUP (ORDER BY latency_ms)
+                            FILTER (WHERE latency_ms IS NOT NULL AND status = 'ok')               AS p50_ms,
+                        percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)
+                            FILTER (WHERE latency_ms IS NOT NULL AND status = 'ok')               AS p95_ms,
+                        MAX(latency_ms)                                                           AS max_ms
+                 FROM ai_usage
+                 WHERE created_at >= now() - ($1::int || ' days')::interval
+                   AND (meta IS NULL OR NOT (meta ? 'legacy'))
+                 GROUP BY action
+                 ORDER BY cost_pence DESC, actions DESC`,
+                [days],
+            ),
+            pool.query(
+                `SELECT model,
+                        COUNT(*)::int                                 AS actions,
+                        COALESCE(SUM(calls), 0)::int                  AS model_calls,
+                        COALESCE(SUM(input_tokens), 0)::bigint        AS input_tokens,
+                        COALESCE(SUM(output_tokens), 0)::bigint       AS output_tokens,
+                        COALESCE(SUM(cost_pence), 0)::float           AS cost_pence
+                 FROM ai_usage
+                 WHERE created_at >= now() - ($1::int || ' days')::interval
+                   AND model IS NOT NULL
+                 GROUP BY model ORDER BY cost_pence DESC`,
+                [days],
+            ),
+            pool.query(
+                `SELECT action, meta->>'outcome' AS outcome, COUNT(*)::int AS n
+                 FROM ai_usage
+                 WHERE created_at >= now() - ($1::int || ' days')::interval
+                   AND meta ? 'outcome'
+                 GROUP BY action, outcome ORDER BY n DESC`,
+                [days],
+            ),
+            pool.query(
+                `SELECT h.id, h.name, h.plan,
+                        COALESCE((SELECT string_agg(u.email, ', ' ORDER BY u.email)
+                                  FROM household_member m JOIN "user" u ON u.id = m.user_id
+                                  WHERE m.household_id = h.id), '') AS emails,
+                        COUNT(*) FILTER (WHERE a.status <> 'rejected')::int AS actions,
+                        COALESCE(SUM(a.credits), 0)::int                    AS credits,
+                        COALESCE(SUM(a.cost_pence), 0)::float               AS cost_pence,
+                        COUNT(*) FILTER (WHERE a.status = 'rejected')::int  AS rejected
+                 FROM ai_usage a JOIN household h ON h.id = a.household_id
+                 WHERE a.created_at >= now() - ($1::int || ' days')::interval
+                 GROUP BY h.id, h.name, h.plan
+                 ORDER BY cost_pence DESC, actions DESC
+                 LIMIT 12`,
+                [days],
+            ),
+            pool.query(
+                `${DAYS_CTE}
+                 SELECT d.d::text AS date,
+                        COALESCE(SUM(a.cost_pence), 0)::float AS cost_pence,
+                        COUNT(a.id) FILTER (WHERE a.status <> 'rejected')::int AS actions
+                 FROM days d LEFT JOIN ai_usage a ON a.created_at::date = d.d
+                 GROUP BY d.d ORDER BY d.d`,
+                [days],
+            ),
+            pool.query(
+                `SELECT COUNT(*)::int AS n FROM ai_usage
+                 WHERE created_at >= now() - ($1::int || ' days')::interval
+                   AND meta ? 'legacy'`,
+                [days],
+            ),
+        ]);
+
+        const num = (v) => (v == null ? null : Number(v));
+        const totals = { actions: 0, modelCalls: 0, credits: 0, costPence: 0, costUsd: 0, failed: 0, refunded: 0, rejected: 0 };
+        const byAction = byActionRes.rows.map((r) => {
+            totals.actions += Number(r.actions);
+            totals.modelCalls += Number(r.model_calls);
+            totals.credits += Number(r.credits);
+            totals.costPence += Number(r.cost_pence);
+            totals.costUsd += Number(r.cost_usd);
+            totals.failed += Number(r.failed);
+            totals.refunded += Number(r.refunded);
+            totals.rejected += Number(r.rejected);
+            return {
+                action: r.action,
+                actions: Number(r.actions),
+                charged: Number(r.charged),
+                refunded: Number(r.refunded),
+                failed: Number(r.failed),
+                rejected: Number(r.rejected),
+                stale: Number(r.stale),
+                modelCalls: Number(r.model_calls),
+                credits: Number(r.credits),
+                inputTokens: Number(r.input_tokens),
+                outputTokens: Number(r.output_tokens),
+                cacheReadTokens: Number(r.cache_read_tokens),
+                costUsd: Number(r.cost_usd),
+                costPence: Number(r.cost_pence),
+                p50Ms: num(r.p50_ms),
+                p95Ms: num(r.p95_ms),
+                maxMs: num(r.max_ms),
+            };
+        });
+        totals.costPence = Math.round(totals.costPence * 100) / 100;
+        totals.costUsd = Math.round(totals.costUsd * 1e4) / 1e4;
+
+        res.json({
+            days,
+            totals,
+            byAction,
+            byModel: byModelRes.rows.map((r) => ({
+                model: r.model,
+                actions: Number(r.actions),
+                modelCalls: Number(r.model_calls),
+                inputTokens: Number(r.input_tokens),
+                outputTokens: Number(r.output_tokens),
+                costPence: Number(r.cost_pence),
+            })),
+            outcomes: outcomesRes.rows.map((r) => ({ action: r.action, outcome: r.outcome, count: Number(r.n) })),
+            topHouseholds: householdsRes.rows.map((r) => ({
+                id: r.id,
+                name: r.name,
+                plan: r.plan,
+                emails: r.emails,
+                actions: Number(r.actions),
+                credits: Number(r.credits),
+                costPence: Number(r.cost_pence),
+                rejected: Number(r.rejected),
+            })),
+            daily: dailyRes.rows.map((r) => ({ date: r.date, costPence: Number(r.cost_pence), count: Number(r.actions) })),
+            legacyRows: Number(legacyRes.rows[0].n),
+            generated_at: new Date().toISOString(),
         });
     } catch (error) {
         next(error);
@@ -496,4 +715,4 @@ async function revokePremium(req, res, next) {
     }
 }
 
-module.exports = { overview, users, comps, grantPremium, revokePremium };
+module.exports = { overview, users, aiStats, comps, grantPremium, revokePremium };

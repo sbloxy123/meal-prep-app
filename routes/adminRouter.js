@@ -6,6 +6,8 @@ const adminController = require("../controllers/adminController");
 // behind requireAuth + requireAdmin in app.js.
 adminRouter.get("/overview", adminController.overview);
 adminRouter.get("/users", adminController.users);
+// The AI ledger (ai_usage): cost, tokens, latency, outcomes per action/model.
+adminRouter.get("/ai", adminController.aiStats);
 
 // Premium grants: comp a household to premium (no Stripe), or revoke.
 adminRouter.get("/premium/comps", adminController.comps);

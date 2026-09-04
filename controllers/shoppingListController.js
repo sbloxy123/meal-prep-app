@@ -1,13 +1,18 @@
 const db = require("../db/queries");
-const Anthropic = require("@anthropic-ai/sdk");
 const { jsonrepair } = require("jsonrepair");
-const { weeklyLimitReached } = require("../lib/aiAllowance");
-const client = new Anthropic();
+const { startAiAction } = require("../lib/aiAllowance");
+const { runModel, textOf } = require("../lib/ai");
 
-// Per-household 6h burst ceiling for "Generate list by aisle" — the anti-abuse
-// guard that applies to everyone. The weekly free pool (weeklyLimitReached) is
-// checked first and only bites free households.
+const AI_MODEL = "claude-haiku-4-5-20251001";
+
+// Per-household 6h burst ceilings — the anti-abuse guard that applies to
+// everyone. The weekly free pool (startAiAction) is checked first and only
+// bites free households.
 const AISLE_LIMIT = 20;
+// "Add with AI" on the shopping list (paste → items). Free — it is a tiny call
+// and the list must stay free at every tier — but it had NO ceiling at all
+// before the ledger landed, so it gets one now.
+const PARSE_LIMIT = 30;
 
 const {
     recipeShoppingListSchema,
@@ -183,19 +188,19 @@ async function removeRecipeFromShoppingList(req, res, next) {
 }
 
 async function organiseShoppingList(req, res, next) {
+    let ledger = null;
     try {
         const householdId = req.householdId;
 
         // "Generate list by aisle" is an AI call — it draws from the weekly pool
         // and the 6h burst ceiling, same as the recipe AI endpoints.
-        if (await weeklyLimitReached(householdId, res)) return;
-        const recent = await db.countRecentImports(householdId, "aisle");
-        if (recent >= AISLE_LIMIT) {
-            return res.status(429).json({
-                error: "Aisle-sort limit reached — 20 per 6 hours. Try again later.",
-            });
-        }
-        await db.recordImport(householdId, "aisle");
+        ledger = await startAiAction(req, res, {
+            action: "aisle",
+            credits: 1,
+            burstLimit: AISLE_LIMIT,
+            burstMessage: "Aisle-sort limit reached — 20 per 6 hours. Try again later.",
+        });
+        if (!ledger) return;
 
         const shoppingList = await db.getShoppingListItems(householdId);
 
@@ -205,8 +210,8 @@ async function organiseShoppingList(req, res, next) {
             is_custom_product: item.quantity === 0 || item.quantity === "0",
         }));
 
-        const message = await client.messages.create({
-            model: "claude-haiku-4-5-20251001",
+        const message = await runModel(ledger, {
+            model: AI_MODEL,
             max_tokens: 4096,
             messages: [
                 {
@@ -232,12 +237,7 @@ async function organiseShoppingList(req, res, next) {
             ],
         });
 
-        const rawText = message.content[0].text
-            .replace(/^```json\n?/, "")
-            .replace(/\n?```$/, "")
-            .trim();
-
-        console.log("[organiseShoppingList] Raw Claude response:", rawText);
+        const rawText = textOf(message);
 
         let result;
         try {
@@ -247,6 +247,7 @@ async function organiseShoppingList(req, res, next) {
                 result = JSON.parse(jsonrepair(rawText));
             } catch (repairError) {
                 console.error("[organiseShoppingList] JSON parse failed:", repairError.message);
+                await ledger.settle("failed", { errorCode: "unparseable" });
                 return res.status(400).json({
                     error: "Failed to parse Claude response as JSON",
                     details: repairError.message,
@@ -255,17 +256,20 @@ async function organiseShoppingList(req, res, next) {
         }
 
         await db.createShoppingListByAisles(result, householdId);
+        await ledger.settle("ok", { meta: { items: shoppingList.length } });
         db.recordEvent("list_generated", {
             userId: req.user.id,
             householdId,
         });
         res.json({ success: true });
     } catch (error) {
+        if (ledger) await ledger.fail(error);
         next(error);
     }
 }
 
 async function parseIngredientsWithAI(req, res, next) {
+    let ledger = null;
     try {
         const householdId = req.householdId;
         const rawText = req.body.ingredients_text;
@@ -273,8 +277,18 @@ async function parseIngredientsWithAI(req, res, next) {
             return res.status(400).json({ error: "No ingredients text provided" });
         }
 
-        const message = await client.messages.create({
-            model: "claude-haiku-4-5-20251001",
+        // Free (credits 0, no weekly check) but logged and burst-capped.
+        ledger = await startAiAction(req, res, {
+            action: "parse",
+            credits: 0,
+            weekly: false,
+            burstLimit: PARSE_LIMIT,
+            burstMessage: "That's a lot of pasting — try again in a few hours.",
+        });
+        if (!ledger) return;
+
+        const message = await runModel(ledger, {
+            model: AI_MODEL,
             max_tokens: 1024,
             messages: [
                 {
@@ -289,10 +303,7 @@ Raw text: ${rawText}`,
             ],
         });
 
-        const responseText = message.content[0].text
-            .replace(/^```json\n?/, "")
-            .replace(/\n?```$/, "")
-            .trim();
+        const responseText = textOf(message);
 
         let items;
         try {
@@ -302,12 +313,13 @@ Raw text: ${rawText}`,
         }
 
         if (!Array.isArray(items)) {
+            await ledger.settle("failed", { errorCode: "unparseable" });
             return res.status(500).json({ error: "Unexpected response format from AI" });
         }
 
         const addedItems = [];
         for (const item of items) {
-            const trimmed = item.trim();
+            const trimmed = String(item ?? "").trim();
             if (trimmed) {
                 await db.createCustomProduct(trimmed, householdId);
                 const row = await db.getCustomProductByName(trimmed, householdId);
@@ -315,8 +327,10 @@ Raw text: ${rawText}`,
             }
         }
 
+        await ledger.settle("ok", { meta: { items: addedItems.length } });
         res.json({ success: true, items: addedItems });
     } catch (error) {
+        if (ledger) await ledger.fail(error);
         next(error);
     }
 }
