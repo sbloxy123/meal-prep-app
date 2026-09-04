@@ -1138,6 +1138,37 @@ async function reserveCredits({ householdId, userId = null, action, credits, pla
     });
 }
 
+// Trialling free households whose trial ends within `daysBefore` days (and
+// hasn't ended), with the owner to email. lib/trial.js decides per stage.
+async function getTrialHouseholdsDue({ daysBefore, now = new Date() }) {
+    const { rows } = await pool.query(
+        `SELECT h.id, h.trial_ends_at, h.credit_allowance, h.premium_credit_allowance,
+                u.id AS owner_id, u.email AS owner_email, u.name AS owner_name
+         FROM household h
+         JOIN household_member hm ON hm.household_id = h.id AND hm.role = 'owner'
+         JOIN "user" u ON u.id = hm.user_id
+         WHERE h.plan <> 'premium'
+           AND h.trial_ends_at > $1
+           AND h.trial_ends_at <= $1 + ($2::int || ' days')::interval
+           AND u."emailVerified" = true`,
+        [now, daysBefore],
+    );
+    return rows;
+}
+
+// Claim a trial prompt (household × stage × channel). True when this call won
+// the row — the caller then sends; false when it was already claimed.
+async function claimTrialPrompt({ householdId, userId = null, stage, channel, endsAt = null }) {
+    const { rowCount } = await pool.query(
+        `INSERT INTO app_events (type, user_id, household_id, meta)
+         VALUES ('trial_prompt', $1, $2, $3)
+         ON CONFLICT (household_id, (meta->>'stage'), (meta->>'channel')) WHERE type = 'trial_prompt'
+         DO NOTHING`,
+        [userId, householdId, JSON.stringify({ stage, channel, ends_at: endsAt ? new Date(endsAt).toISOString() : null })],
+    );
+    return rowCount === 1;
+}
+
 // Comps: premium with no Stripe subscription and no credit ceiling.
 async function setHouseholdComp(householdId, comped) {
     const { getConfig } = require("../lib/config");
@@ -1366,6 +1397,8 @@ module.exports = {
     getEntitlement,
     reserveCredits,
     setHouseholdComp,
+    getTrialHouseholdsDue,
+    claimTrialPrompt,
     setHouseholdPremiumFromSubscription,
     clearHouseholdPremiumByPayer,
     getOrCreateShareToken,

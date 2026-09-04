@@ -31,6 +31,11 @@ const ALLOWED = new Set([
     // A phone on an iOS newer than the walkthrough has been verified on. The
     // first sighting of each major emails the admins (lib/install.js).
     "install_layout_unverified",
+    // The in-app trial card was shown (stage: ending_soon | last_day | ended).
+    // The email counterpart is written server-side by lib/trial.js. One row
+    // per household/stage/channel (unique index, migration 017) — repeats are
+    // dropped by the database, so a client can't inflate the funnel.
+    "trial_prompt",
 ]);
 
 const { alertNewIosMajor } = require("../lib/install");
@@ -76,6 +81,11 @@ function cleanMeta(type, raw) {
     if (type === "install_layout_unverified") {
         set("ios", str(m.ios, 8));
         set("verified", num(m.verified));
+    }
+
+    if (type === "trial_prompt") {
+        set("stage", ["ending_soon", "last_day", "ended"].includes(m.stage) ? m.stage : undefined);
+        set("channel", "app");
     }
 
     if (Object.keys(out).length === 0) return null;

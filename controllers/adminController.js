@@ -707,7 +707,11 @@ async function creditStats(req, res, next) {
                     (SELECT COUNT(*)::int FROM app_events WHERE type = 'trial_started'
                        AND created_at >= now() - ($1::int || ' days')::interval) AS started_in_range,
                     (SELECT COUNT(*)::int FROM app_events WHERE type = 'trial_converted'
-                       AND created_at >= now() - ($1::int || ' days')::interval) AS converted_in_range
+                       AND created_at >= now() - ($1::int || ' days')::interval) AS converted_in_range,
+                    (SELECT COUNT(*)::int FROM app_events WHERE type = 'trial_prompt' AND meta->>'channel' = 'email'
+                       AND created_at >= now() - ($1::int || ' days')::interval) AS emails_in_range,
+                    (SELECT COUNT(*)::int FROM app_events WHERE type = 'trial_prompt' AND meta->>'channel' = 'app'
+                       AND created_at >= now() - ($1::int || ' days')::interval) AS cards_in_range
                  FROM household`,
                 [days],
             ),
@@ -750,6 +754,8 @@ async function creditStats(req, res, next) {
                 paying: Number(t.paying),
                 startedInRange: Number(t.started_in_range),
                 convertedInRange: Number(t.converted_in_range),
+                emailsInRange: Number(t.emails_in_range),
+                cardsInRange: Number(t.cards_in_range),
             },
             rejections: { count: Number(rj.rejections), households: Number(rj.households) },
             generated_at: new Date().toISOString(),

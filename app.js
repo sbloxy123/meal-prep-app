@@ -89,6 +89,9 @@ initializeDatabase()
                 throw error;
             }
             console.log(`Express app listening on port ${PORT}!`);
+            // Hourly: the two trial-ending emails (lib/trial.js). Idempotent
+            // via a database claim, so a second instance is harmless.
+            require("./lib/trial").startTrialSweep();
         });
     })
     .catch((error) => {
