@@ -2,6 +2,7 @@ const db = require("../db/queries");
 const { jsonrepair } = require("jsonrepair");
 const { startAiAction } = require("../lib/aiAllowance");
 const { runModel, textOf } = require("../lib/ai");
+const { organiseList } = require("../lib/ingredients/organise");
 
 const AI_MODEL = "claude-haiku-4-5-20251001";
 
@@ -197,81 +198,33 @@ async function removeRecipeFromShoppingList(req, res, next) {
     }
 }
 
+// "Generate list by aisle". Free at every tier (weight 0 — the ledger row is
+// kept for the usage curve and the cache hit rate), still burst-capped. The
+// aisle cache (lib/ingredients/organise.js) places almost everything without a
+// model; only genuine misses go to Haiku, in one call.
 async function organiseShoppingList(req, res, next) {
     let ledger = null;
     try {
         const householdId = req.householdId;
 
-        // "Generate list by aisle" is an AI call — it draws from the weekly pool
-        // and the 6h burst ceiling, same as the recipe AI endpoints.
         ledger = await startAiAction(req, res, {
             action: "aisle",
-            credits: 1,
             burstLimit: AISLE_LIMIT,
             burstMessage: "Aisle-sort limit reached — 20 per 6 hours. Try again later.",
         });
         if (!ledger) return;
 
         const shoppingList = await db.getShoppingListItems(householdId);
+        const { items, stats } = await organiseList(shoppingList, { ledger });
 
-        const formattedList = shoppingList.map((item) => ({
-            name: item.ingredient_name || item.custom_product,
-            recipe_count: item.recipe_count,
-            is_custom_product: item.quantity === 0 || item.quantity === "0",
-        }));
-
-        const message = await runModel(ledger, {
-            model: AI_MODEL,
-            max_tokens: 4096,
-            messages: [
-                {
-                    role: "user",
-                    content: `You are a helpful shopping assistant.
-                        Organise the following shopping list into UK supermarket aisles.
-                        If the recipe's recipe_count is 0, mark is_custom_produt to true
-                        Return ONLY valid raw JSON with no other text, or wrapping in markdown code fences or backticks. If the item has additional text such as 'x3' or 'x 4' etc, please use your initiative and add it to the quantity property. Use quantity of 1 if nothing is specified. If an item appears for both is_custom_product: true AND false, please just update the existing item.quantity by the relevant amount.
-                        If an item is a herb plant, put it in the fresh produce supermarket aisle.
-                        Please make sure the JSON response from Claude doesn't contain unescaped quotes or newlines in the product names.
-                        Please use exactly this structure:
-                        {
-                            items: [
-                                "product" : "string",
-                                "quantity" : "string",
-                                "aisle" : "string",
-                                "recipe_count": number,
-                                "is_custom_product" : boolean
-                            ]
-                        }
-                        Shopping list: ${JSON.stringify(formattedList)}`,
-                },
-            ],
-        });
-
-        const rawText = textOf(message);
-
-        let result;
-        try {
-            result = JSON.parse(rawText);
-        } catch (parseError) {
-            try {
-                result = JSON.parse(jsonrepair(rawText));
-            } catch (repairError) {
-                console.error("[organiseShoppingList] JSON parse failed:", repairError.message);
-                await ledger.settle("failed", { errorCode: "unparseable" });
-                return res.status(400).json({
-                    error: "Failed to parse Claude response as JSON",
-                    details: repairError.message,
-                });
-            }
-        }
-
-        await db.createShoppingListByAisles(result, householdId);
-        await ledger.settle("ok", { meta: { items: shoppingList.length } });
+        await db.createShoppingListByAisles(items, householdId);
+        await ledger.settle("ok", { meta: stats });
         db.recordEvent("list_generated", {
             userId: req.user.id,
             householdId,
+            meta: { lines: stats.lines, hits: stats.hits, misses: stats.misses, model_calls: stats.modelCalls },
         });
-        res.json({ success: true });
+        res.json({ success: true, stats });
     } catch (error) {
         if (ledger) await ledger.fail(error);
         next(error);

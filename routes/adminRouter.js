@@ -13,6 +13,11 @@ adminRouter.get("/credits", adminController.creditStats);
 // app_config knobs (trial length, allowances, weights, member limit, founders).
 adminRouter.get("/config", adminController.getConfig);
 adminRouter.put("/config", adminController.putConfig);
+// Ingredient → aisle cache review: model guesses to confirm/correct, misses to map.
+adminRouter.get("/aisles", adminController.aisleReview);
+adminRouter.post("/aisles", adminController.addAisle);
+adminRouter.put("/aisles/:id", adminController.setAisle);
+adminRouter.delete("/aisles/:id", adminController.deleteAisle);
 
 // Premium grants: comp a household to premium (no Stripe), or revoke.
 adminRouter.get("/premium/comps", adminController.comps);
