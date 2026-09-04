@@ -564,19 +564,6 @@ async function removeRecipeFromShoppingList(recipeId, householdId) {
     }
 }
 
-async function addSingleItemToGeneratedList(product, householdId) {
-    await pool.query(
-        "INSERT INTO generated_shopping_list (product_name, aisle_name, recipe_count, is_custom_product, quantity, household_id) VALUES ($1, $2, $3, $4, $5, $6)",
-        [
-            product.product,
-            product.aisle,
-            product.recipe_count,
-            product.is_custom_product,
-            product.quantity,
-            householdId,
-        ],
-    );
-}
 
 // §8.2a — append a single "forgot something" item to the generated list
 // without regenerating. Dropped in an "Other" aisle. The households migration
@@ -586,38 +573,168 @@ async function addForgottenItemToGeneratedList(productName, householdId) {
     await pool.query(
         `INSERT INTO generated_shopping_list
              (product_name, aisle_name, recipe_count, is_custom_product, quantity, household_id)
-         SELECT $1, 'Other', '0', true, '1', $2
+         SELECT $1, $3, '0', true, '1', $2
          WHERE NOT EXISTS (
              SELECT 1 FROM generated_shopping_list
              WHERE product_name = $1 AND household_id = $2
          )`,
-        [productName, householdId],
+        [productName, householdId, require("../lib/ingredients/aisles").OTHER],
     );
 }
 
+// Replace the household's generated list in one transaction and one
+// multi-row insert, in the order given (lib/ingredients/organise.js hands
+// the rows over in walking order). Atomic: a failure leaves the previous list
+// in place rather than a half-written one.
 async function createShoppingListByAisles(generatedShoppingItems, householdId) {
-    try {
-        await pool.query(
-            "DELETE FROM generated_shopping_list WHERE household_id = $1",
-            [householdId],
+    const items = Array.isArray(generatedShoppingItems)
+        ? generatedShoppingItems
+        : generatedShoppingItems?.items ?? [];
+    await withTransaction(async (client) => {
+        await client.query("DELETE FROM generated_shopping_list WHERE household_id = $1", [householdId]);
+        if (items.length === 0) return;
+        await client.query(
+            `INSERT INTO generated_shopping_list
+                 (product_name, aisle_name, recipe_count, is_custom_product, quantity, household_id)
+             SELECT p, a, r, c, q, $6
+             FROM unnest($1::text[], $2::text[], $3::text[], $4::boolean[], $5::text[])
+                  WITH ORDINALITY AS t(p, a, r, c, q, ord)
+             ORDER BY ord`,
+            [
+                items.map((i) => String(i.product ?? i.product_name ?? "")),
+                items.map((i) => String(i.aisle ?? i.aisle_name ?? "Other")),
+                items.map((i) => String(i.recipe_count ?? "0")),
+                items.map((i) => Boolean(i.is_custom_product)),
+                items.map((i) => String(i.quantity ?? "1")),
+                householdId,
+            ],
         );
-        await Promise.all(
-            generatedShoppingItems.items.map((product) =>
-                addSingleItemToGeneratedList(product, householdId),
-            ),
-        );
-    } catch (error) {
-        console.log(error);
-        throw error;
-    }
+    });
 }
 
+// Insertion order is the walking order, so the id sort is the aisle sort.
 async function getGeneratedShoppingListItems(householdId) {
     const { rows } = await pool.query(
-        "SELECT * FROM generated_shopping_list WHERE household_id = $1",
+        "SELECT * FROM generated_shopping_list WHERE household_id = $1 ORDER BY id",
         [householdId],
     );
     return rows;
+}
+
+// ========= INGREDIENT → AISLE CACHE (migration 018) ========= //
+// Global, shared by every household. lib/ingredients/organise.js resolves a
+// list against it and asks the model only for the misses.
+
+async function lookupAisles(keys, region = "UK") {
+    if (!keys.length) return new Map();
+    const { rows } = await pool.query(
+        "SELECT key, aisle FROM ingredient_aisles WHERE region = $1 AND key = ANY($2::text[])",
+        [region, keys],
+    );
+    return new Map(rows.map((r) => [r.key, r.aisle]));
+}
+
+// Model guesses: source 'model', confidence 0.5, never overwrite an existing
+// row (a human correction must win).
+async function upsertModelAisles(rows, region = "UK") {
+    if (!rows.length) return;
+    await pool.query(
+        `INSERT INTO ingredient_aisles (key, label, aisle, region, source, confidence, usage_count)
+         SELECT k, l, a, $4, 'model', 0.5, 1
+         FROM unnest($1::text[], $2::text[], $3::text[]) AS t(k, l, a)
+         ON CONFLICT (key, region) DO NOTHING`,
+        [rows.map((r) => r.key), rows.map((r) => r.label), rows.map((r) => r.aisle), region],
+    );
+}
+
+async function bumpAisleUsage(keys, region = "UK") {
+    if (!keys.length) return;
+    await pool.query(
+        "UPDATE ingredient_aisles SET usage_count = usage_count + 1 WHERE region = $1 AND key = ANY($2::text[])",
+        [region, keys],
+    );
+}
+
+async function recordAisleMisses(misses, region = "UK") {
+    if (!misses.length) return;
+    await pool.query(
+        `INSERT INTO ingredient_aisle_misses (key, raw_sample, region)
+         SELECT k, r, $3 FROM unnest($1::text[], $2::text[]) AS t(k, r)
+         ON CONFLICT (key, region) DO UPDATE
+             SET hit_count = ingredient_aisle_misses.hit_count + 1,
+                 last_seen = now(),
+                 raw_sample = COALESCE(EXCLUDED.raw_sample, ingredient_aisle_misses.raw_sample)`,
+        [misses.map((m) => m.key), misses.map((m) => m.raw ?? null), region],
+    );
+}
+
+// Admin review: model rows nobody has checked, busiest first.
+async function getAisleReviewQueue({ region = "UK", limit = 100 } = {}) {
+    const { rows } = await pool.query(
+        `SELECT id, key, label, aisle, source, confidence, usage_count, reviewed_at, created_at
+         FROM ingredient_aisles
+         WHERE region = $1 AND source = 'model' AND reviewed_at IS NULL
+         ORDER BY usage_count DESC, created_at DESC
+         LIMIT $2`,
+        [region, limit],
+    );
+    return rows;
+}
+
+async function getAisleStats(region = "UK") {
+    const { rows } = await pool.query(
+        `SELECT
+            COUNT(*)::int AS total,
+            COUNT(*) FILTER (WHERE source = 'seed')::int AS seed,
+            COUNT(*) FILTER (WHERE source = 'model')::int AS model,
+            COUNT(*) FILTER (WHERE source = 'human')::int AS human,
+            COUNT(*) FILTER (WHERE source = 'model' AND reviewed_at IS NULL)::int AS unreviewed,
+            (SELECT COUNT(*)::int FROM ingredient_aisle_misses WHERE region = $1) AS misses
+         FROM ingredient_aisles WHERE region = $1`,
+        [region],
+    );
+    return rows[0];
+}
+
+async function getAisleMisses({ region = "UK", limit = 100 } = {}) {
+    const { rows } = await pool.query(
+        `SELECT id, key, raw_sample, hit_count, last_seen
+         FROM ingredient_aisle_misses WHERE region = $1
+         ORDER BY hit_count DESC, last_seen DESC LIMIT $2`,
+        [region, limit],
+    );
+    return rows;
+}
+
+// A human decision: set the aisle, mark reviewed. Returns the row or null.
+async function setAisle(id, aisle) {
+    const { rows } = await pool.query(
+        `UPDATE ingredient_aisles
+         SET aisle = $2, source = 'human', confidence = 1.0, reviewed_at = now(), updated_at = now()
+         WHERE id = $1 RETURNING id, key, label, aisle, source, usage_count`,
+        [id, aisle],
+    );
+    return rows[0] ?? null;
+}
+
+async function deleteAisle(id) {
+    const { rowCount } = await pool.query("DELETE FROM ingredient_aisles WHERE id = $1", [id]);
+    return rowCount === 1;
+}
+
+// A human adds a mapping (usually for a miss); clears the miss row.
+async function addHumanAisle({ key, label, aisle, region = "UK" }) {
+    const { rows } = await pool.query(
+        `INSERT INTO ingredient_aisles (key, label, aisle, region, source, confidence, reviewed_at)
+         VALUES ($1, $2, $3, $4, 'human', 1.0, now())
+         ON CONFLICT (key, region) DO UPDATE
+             SET aisle = EXCLUDED.aisle, label = EXCLUDED.label, source = 'human',
+                 confidence = 1.0, reviewed_at = now(), updated_at = now()
+         RETURNING id, key, label, aisle, source, usage_count`,
+        [key, label, aisle, region],
+    );
+    await pool.query("DELETE FROM ingredient_aisle_misses WHERE key = $1 AND region = $2", [key, region]);
+    return rows[0];
 }
 
 async function toggleCollected(productId, status, householdId) {
@@ -1399,6 +1516,16 @@ module.exports = {
     setHouseholdComp,
     getTrialHouseholdsDue,
     claimTrialPrompt,
+    lookupAisles,
+    upsertModelAisles,
+    bumpAisleUsage,
+    recordAisleMisses,
+    getAisleReviewQueue,
+    getAisleStats,
+    getAisleMisses,
+    setAisle,
+    deleteAisle,
+    addHumanAisle,
     setHouseholdPremiumFromSubscription,
     clearHouseholdPremiumByPayer,
     getOrCreateShareToken,

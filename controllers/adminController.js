@@ -765,6 +765,78 @@ async function creditStats(req, res, next) {
     }
 }
 
+// ===== Ingredient → aisle cache (admin review) =====
+// One bad mapping affects every household, so model guesses are a queue to
+// work. Human decisions win forever (source 'human'; the seed script and the
+// organise write-back both use ON CONFLICT DO NOTHING).
+
+const { AISLES, isSlug } = require("../lib/ingredients/aisles");
+const { normaliseIngredient } = require("../lib/ingredients/normalise");
+
+// GET /admin/aisles — queue, misses, stats, the taxonomy.
+async function aisleReview(req, res, next) {
+    try {
+        const [queue, misses, stats] = await Promise.all([
+            db.getAisleReviewQueue({ limit: 100 }),
+            db.getAisleMisses({ limit: 100 }),
+            db.getAisleStats(),
+        ]);
+        res.json({ queue, misses, stats, aisles: AISLES });
+    } catch (error) {
+        next(error);
+    }
+}
+
+// PUT /admin/aisles/:id { aisle } — confirm or correct a model guess.
+async function setAisleHandler(req, res, next) {
+    try {
+        const id = Number.parseInt(req.params.id, 10);
+        const aisle = req.body?.aisle;
+        if (!Number.isInteger(id) || !isSlug(aisle)) {
+            return res.status(400).json({ error: "A valid id and aisle are required." });
+        }
+        const row = await db.setAisle(id, aisle);
+        if (!row) return res.status(404).json({ error: "No such mapping." });
+        db.recordEvent("aisle_reviewed", { userId: req.user.id, meta: { key: row.key, aisle } });
+        res.json({ row });
+    } catch (error) {
+        next(error);
+    }
+}
+
+// DELETE /admin/aisles/:id — drop a wrong mapping so the next list asks again.
+async function deleteAisleHandler(req, res, next) {
+    try {
+        const id = Number.parseInt(req.params.id, 10);
+        if (!Number.isInteger(id)) return res.status(400).json({ error: "A valid id is required." });
+        const ok = await db.deleteAisle(id);
+        if (!ok) return res.status(404).json({ error: "No such mapping." });
+        res.json({ ok: true });
+    } catch (error) {
+        next(error);
+    }
+}
+
+// POST /admin/aisles { key | text, aisle, label? } — add a mapping by hand
+// (typically for a miss). `text` is normalised the way a list line would be.
+async function addAisleHandler(req, res, next) {
+    try {
+        const aisle = req.body?.aisle;
+        const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
+        let key = typeof req.body?.key === "string" ? req.body.key.trim().toLowerCase() : "";
+        if (!key && text) key = normaliseIngredient(text).key ?? "";
+        if (!key || !isSlug(aisle)) {
+            return res.status(400).json({ error: "An ingredient and a valid aisle are required." });
+        }
+        const label = typeof req.body?.label === "string" && req.body.label.trim() ? req.body.label.trim() : text || key;
+        const row = await db.addHumanAisle({ key, label: label.slice(0, 120), aisle });
+        db.recordEvent("aisle_added", { userId: req.user.id, meta: { key, aisle } });
+        res.status(201).json({ row });
+    } catch (error) {
+        next(error);
+    }
+}
+
 // ===== Premium comps (admin writes) =====
 // Entitlement is household.plan, so a "comp" is just a premium household with no
 // Stripe subscription — nothing overwrites it (the Stripe callbacks only touch
@@ -877,6 +949,10 @@ module.exports = {
     creditStats,
     getConfig: getConfigHandler,
     putConfig: putConfigHandler,
+    aisleReview,
+    setAisle: setAisleHandler,
+    deleteAisle: deleteAisleHandler,
+    addAisle: addAisleHandler,
     comps,
     grantPremium,
     revokePremium,
