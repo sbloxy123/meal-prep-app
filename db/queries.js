@@ -1361,6 +1361,10 @@ async function claimTrialPrompt({ householdId, userId = null, stage, channel, en
     return rowCount === 1;
 }
 
+async function setHouseholdFounder(householdId, founder) {
+    await pool.query("UPDATE household SET founder = $2 WHERE id = $1", [householdId, Boolean(founder)]);
+}
+
 // Comps: premium with no Stripe subscription and no credit ceiling.
 async function setHouseholdComp(householdId, comped) {
     const { getConfig } = require("../lib/config");
@@ -1589,6 +1593,7 @@ module.exports = {
     getEntitlement,
     reserveCredits,
     setHouseholdComp,
+    setHouseholdFounder,
     getTrialHouseholdsDue,
     claimTrialPrompt,
     lookupAisles,
