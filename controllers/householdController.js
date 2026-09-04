@@ -13,15 +13,50 @@ const INVITE_TTL_DAYS = 7;
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 // GET /household — the household, its members, pending invites, caller's role.
+// Free households have a member limit (their own snapshot, app_config
+// member_limit_free at signup); premium and trial households have none.
+// Pending invites hold a seat, so five invites can't be sent for one seat.
+// Members already present when a plan lapses are never removed — only new
+// invites are blocked. This is the retention-side paywall: the upgrade
+// prompt sits exactly where someone is trying to bring another person in.
+function seatCheck(entitlement, members, invites) {
+    const limit = entitlement.memberLimit;
+    const seats = members.length + invites.length;
+    if (limit == null) return { canInvite: true, reason: null, limit: null, seats };
+    if (seats >= limit) {
+        return {
+            canInvite: false,
+            limit,
+            seats,
+            reason:
+                limit === 1
+                    ? "Sharing your kitchen is part of Premium."
+                    : `Your plan includes ${limit} people. Premium lets the whole household in.`,
+        };
+    }
+    return { canInvite: true, reason: null, limit, seats };
+}
+
 async function getHousehold(req, res, next) {
     try {
-        const [household, members, invites] = await Promise.all([
+        const [household, members, invites, entitlement] = await Promise.all([
             db.getHouseholdById(req.householdId),
             db.getHouseholdMembers(req.householdId),
             db.getPendingInvites(req.householdId),
+            db.getEntitlement(req.householdId),
         ]);
         const me = members.find((m) => m.user_id === req.user.id);
-        res.json({ household, members, invites, role: me?.role ?? "member" });
+        const seat = seatCheck(entitlement, members, invites);
+        res.json({
+            household,
+            members,
+            invites,
+            role: me?.role ?? "member",
+            plan: entitlement.plan,
+            memberLimit: seat.limit,
+            canInvite: seat.canInvite,
+            reason: seat.reason,
+        });
     } catch (error) {
         next(error);
     }
@@ -40,9 +75,31 @@ async function inviteMember(req, res, next) {
         if (email === (req.user.email ?? "").toLowerCase()) {
             return res.status(400).json({ error: "That's your own email." });
         }
-        const members = await db.getHouseholdMembers(req.householdId);
+        const [members, invites, entitlement] = await Promise.all([
+            db.getHouseholdMembers(req.householdId),
+            db.getPendingInvites(req.householdId),
+            db.getEntitlement(req.householdId),
+        ]);
         if (members.some((m) => (m.email ?? "").toLowerCase() === email)) {
             return res.status(400).json({ error: "They're already in your household." });
+        }
+        // Re-inviting someone who already holds a pending seat replaces that
+        // invite (createInvite deletes it), so it doesn't need a second seat.
+        const alreadyPending = invites.some((i) => (i.invited_email ?? "").toLowerCase() === email);
+        const seat = seatCheck(entitlement, members, alreadyPending ? invites.slice(1) : invites);
+        if (!seat.canInvite) {
+            db.recordEvent("household_limit_hit", {
+                userId: req.user.id,
+                householdId: req.householdId,
+                meta: { limit: seat.limit, seats: seat.seats, plan: entitlement.plan },
+            });
+            return res.status(402).json({
+                error: "HOUSEHOLD_LIMIT",
+                message: seat.reason,
+                limit: seat.limit,
+                seats: seat.seats,
+                plan: entitlement.plan,
+            });
         }
 
         const token = crypto.randomBytes(24).toString("base64url");
@@ -193,6 +250,7 @@ async function revokeInvite(req, res, next) {
 }
 
 module.exports = {
+    seatCheck,
     getHousehold,
     inviteMember,
     acceptInvite,

@@ -711,7 +711,9 @@ async function creditStats(req, res, next) {
                     (SELECT COUNT(*)::int FROM app_events WHERE type = 'trial_prompt' AND meta->>'channel' = 'email'
                        AND created_at >= now() - ($1::int || ' days')::interval) AS emails_in_range,
                     (SELECT COUNT(*)::int FROM app_events WHERE type = 'trial_prompt' AND meta->>'channel' = 'app'
-                       AND created_at >= now() - ($1::int || ' days')::interval) AS cards_in_range
+                       AND created_at >= now() - ($1::int || ' days')::interval) AS cards_in_range,
+                    (SELECT COUNT(*)::int FROM app_events WHERE type = 'household_limit_hit'
+                       AND created_at >= now() - ($1::int || ' days')::interval) AS household_limit_hits
                  FROM household`,
                 [days],
             ),
@@ -757,6 +759,9 @@ async function creditStats(req, res, next) {
                 emailsInRange: Number(t.emails_in_range),
                 cardsInRange: Number(t.cards_in_range),
             },
+            // Owners who tried to invite past their free-tier seats — the
+            // retention-side paywall firing.
+            householdLimitHits: Number(t.household_limit_hits),
             rejections: { count: Number(rj.rejections), households: Number(rj.households) },
             generated_at: new Date().toISOString(),
         });
