@@ -19,7 +19,8 @@ npm run migrate:down
 # Seed the database
 npm run seed
 
-# Unit tests (node --test) — currently test/steps.test.js
+# Unit tests (node --test) — pure modules only. Database-backed suites run with
+# node -r dotenv/config --test test/credit-period.test.js test/organise.test.js
 npm test
 ```
 
@@ -113,6 +114,8 @@ Two constraints drive this order:
 | `generatedShoppingListRouter` | `/generated-shopping-list` | AI aisle-organised list; `POST /generated-shopping-list` appends a single "forgot" item |
 | `householdRouter` | `/household` | household + members + pending invites (`GET`), `POST /invite` `/accept` `/leave`, `DELETE /invite/:id` `/member/:id`, `PUT /` (rename) |
 | `installRouter` | `/install` | `POST /email` — resend the install-guide email (3/user/24h) |
+| `premiumRouter` | `/premium` | `POST /cta` (upsell funnel taps), `GET /offers` (monthly / yearly / founders' availability) |
+| `adminRouter` | `/admin` (ADMIN_EMAILS only) | `/overview`, `/users`, `/ai` (ledger), `/credits` (credit model + trial funnel), `GET/PUT /config` (Plan settings), `/aisles*` (cache review), `/premium/*` (comps) |
 
 ### Authentication
 
@@ -152,6 +155,8 @@ Data is scoped by **household**, not by individual user, so family members can s
 
 ### AI integration
 
+**Strategy reference: `MONETISATION.md`** (plans, credits, trial, seats, what each knob does and where it lives — update it first when a rule changes). **Stripe Dashboard steps: `STRIPE-SETUP.md`.** The founders' offer is built but switched off until its coupon id is set in Plan settings.
+
 Model calls (Haiku 4.5 everywhere; the photo path escalates once to Sonnet 4.6) live in `controllers/recipeImportController.js` (import, estimate-macros, improve, generate-from-title, suggest, parse-from-photo, import-social, usuals) and `controllers/shoppingListController.js`:
 - `POST /shopping-list/organise` — groups the shopping list into UK supermarket aisles; saves result to `generated_shopping_list`.
 - `POST /shopping-list/parse-ingredients` — parses raw pasted text into individual ingredient items.
@@ -163,7 +168,7 @@ Model calls (Haiku 4.5 everywhere; the photo path escalates once to Sonnet 4.6) 
 
 ```js
 ledger = await startAiAction(req, res, { action, credits, burstLimit, burstMessage });
-if (!ledger) return;            // a 429 has been sent (weekly pool → WEEKLY_LIMIT, or the 6h burst cap)
+if (!ledger) return;            // a 429 has been sent (credits → CREDIT_LIMIT, or the 6h burst cap)
 … await runModel(ledger, params) …
 await ledger.settle("ok");      // or "refund" / "failed"; catch blocks call ledger.fail(error)
 ```
