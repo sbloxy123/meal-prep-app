@@ -17,4 +17,13 @@ function requireAdmin(req, res, next) {
     next();
 }
 
-module.exports = { requireAdmin };
+// Is this email on the allowlist? Used to show the Back of house link.
+function isAdminEmail(email) {
+    const allow = (process.env.ADMIN_EMAILS || process.env.ADMIN_EMAIL || "")
+        .split(",")
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean);
+    return Boolean(email) && allow.includes(String(email).toLowerCase());
+}
+
+module.exports = { requireAdmin, isAdminEmail };

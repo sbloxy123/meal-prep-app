@@ -18,10 +18,12 @@ async function offers(req, res, next) {
     try {
         const { getOffers } = require("../lib/offers");
         const o = await getOffers();
+        const { PRICES } = require("../lib/pricing");
         res.json({
             monthly: o.monthly,
             annual: o.annual,
             founders: { available: o.founders.available, remaining: o.founders.remaining, cap: o.founders.cap },
+            prices: { monthly: PRICES.monthly.label, annual: PRICES.annual.label, founders: PRICES.founders.label },
         });
     } catch (error) {
         next(error);

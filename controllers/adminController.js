@@ -614,6 +614,247 @@ async function aiStats(req, res, next) {
     }
 }
 
+// ===== History (daily snapshots → months) =====
+
+const HISTORY_COLUMNS = [
+    ["month", "Month"], ["users", "Users"], ["signups", "Signups"], ["active_7d", "Active 7d (month end)"],
+    ["d7", "Day-7 retention %"], ["d7_cohort", "D7 cohort"], ["paid_households", "Paying households"],
+    ["mrr_pence", "MRR (pence)"], ["cancellations", "Cancellations"], ["trials_started", "Trials started"],
+    ["trials_converted", "Trials converted"], ["ai_actions", "AI actions"], ["ai_cost_pence", "AI cost (pence)"],
+    ["cost_per_paying_pence", "AI cost per paying household (pence)"], ["recipes_created", "Recipes added"],
+    ["lists_generated", "Lists generated"], ["shops_finished", "Shops finished"], ["seat_hits", "Invites blocked by seats"],
+    ["onboarding_completed", "Onboarding completed"], ["onboarding_skipped", "Onboarding skipped"], ["partial", "Partial month"],
+];
+
+const SUMMED = ["signups", "active_users", "ai_actions", "ai_rejected", "ai_credits", "ai_cost_pence", "aisle_actions", "aisle_model_calls",
+    "lists_generated", "week_adds", "shops_finished", "recipes_created", "trials_started", "trials_converted", "trials_expired",
+    "cancellations", "subscriptions_ended", "seat_hits", "cta_taps", "checkouts_started", "onboarding_shown", "onboarding_completed", "onboarding_skipped"];
+const STOCKS = ["users", "verified_users", "households", "multi_member_households", "premium_households", "paid_households", "comped_households",
+    "subs_monthly", "subs_annual", "subs_founders", "mrr_pence", "recipes", "trials_active", "aisle_rows", "active_7d", "active_30d"];
+
+// Roll daily snapshots up into months: stocks from the last day, flows summed,
+// retention weighted by cohort. The current month is flagged partial.
+async function historyRows(months) {
+    const { rows } = await pool.query(
+        `SELECT day::text AS day, metrics FROM metric_snapshots
+         WHERE day >= date_trunc('month', (now() AT TIME ZONE 'Europe/London')::date) - ($1::int || ' months')::interval
+         ORDER BY day`,
+        [months],
+    );
+    const byMonth = new Map();
+    for (const r of rows) {
+        const month = r.day.slice(0, 7);
+        let m = byMonth.get(month);
+        if (!m) {
+            m = { month, days: 0, reconstructed: new Set(), ret: { d1: [0, 0], d7: [0, 0], d30: [0, 0] } };
+            for (const k of SUMMED) m[k] = 0;
+            byMonth.set(month, m);
+        }
+        m.days++;
+        for (const k of SUMMED) m[k] += Number(r.metrics?.[k]) || 0;
+        for (const k of STOCKS) m[k] = r.metrics?.[k] ?? m[k] ?? null; // last day wins
+        for (const k of r.metrics?.reconstructed ?? []) m.reconstructed.add(k);
+        for (const d of ["d1", "d7", "d30"]) {
+            const x = r.metrics?.retention?.[d];
+            if (x) { m.ret[d][0] += x.cohort; m.ret[d][1] += x.retained; }
+        }
+        m.lastDay = r.day;
+    }
+    const thisMonth = new Date().toLocaleDateString("en-CA", { timeZone: "Europe/London" }).slice(0, 7);
+    return [...byMonth.values()].map((m) => {
+        const pctOf = (d) => (m.ret[d][0] ? Math.round((m.ret[d][1] / m.ret[d][0]) * 1000) / 10 : null);
+        return {
+            ...m,
+            ai_cost_pence: Math.round(m.ai_cost_pence * 100) / 100,
+            d1: pctOf("d1"), d7: pctOf("d7"), d30: pctOf("d30"),
+            d7_cohort: m.ret.d7[0],
+            cost_per_paying_pence: m.paid_households ? Math.round((m.ai_cost_pence / m.paid_households) * 100) / 100 : null,
+            reconstructed: [...m.reconstructed],
+            partial: m.month === thisMonth,
+            ret: undefined,
+        };
+    });
+}
+
+// GET /admin/history?months=12[&format=csv]
+async function history(req, res, next) {
+    try {
+        let months = parseInt(req.query.months, 10);
+        if (!Number.isInteger(months) || months < 1 || months > 36) months = 12;
+        const rowsOut = await historyRows(months);
+        if (req.query.format === "csv") {
+            const esc = (v) => (v == null ? "" : /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
+            const lines = [HISTORY_COLUMNS.map(([, label]) => esc(label)).join(",")];
+            for (const r of rowsOut) lines.push(HISTORY_COLUMNS.map(([k]) => esc(k === "partial" ? (r.partial ? "yes" : "") : r[k])).join(","));
+            res.setHeader("Content-Type", "text/csv; charset=utf-8");
+            res.setHeader("Content-Disposition", `attachment; filename="fornetto-history-${new Date().toISOString().slice(0, 10)}.csv"`);
+            return res.send("\uFEFF" + lines.join("\n"));
+        }
+        res.json({ months: rowsOut, generated_at: new Date().toISOString() });
+    } catch (error) {
+        next(error);
+    }
+}
+
+// ===== Onboarding (the questionnaire, step by step) =====
+// GET /admin/onboarding?days=30 — per distinct user in the window, first
+// occurrence of each event. Everything comes from app_events the wizard already
+// logs; see the frontend's onboarding-wizard.tsx for what each meta key means.
+async function onboardingStats(req, res, next) {
+    try {
+        let days = parseInt(req.query.days, 10);
+        if (!ALLOWED_DAYS.includes(days)) days = 30;
+        const win = "created_at >= now() - ($1::int || ' days')::interval";
+
+        const [funnelRes, skipsRes, dietRes, dietsRes, proteinsRes, scopeRes, startersRes, usualsRes, followRes, entryRes] = await Promise.all([
+            pool.query(
+                `WITH e AS (SELECT user_id, type, meta FROM app_events WHERE user_id IS NOT NULL AND type LIKE 'onboarding_%' AND ${win})
+                 SELECT
+                    COUNT(DISTINCT user_id) FILTER (WHERE type = 'onboarding_shown')::int AS shown,
+                    COUNT(DISTINCT user_id) FILTER (WHERE type = 'onboarding_started')::int AS started,
+                    COUNT(DISTINCT user_id) FILTER (WHERE (type = 'onboarding_step' AND (meta->>'step')::int >= 2) OR type = 'onboarding_completed')::int AS step2,
+                    COUNT(DISTINCT user_id) FILTER (WHERE (type = 'onboarding_step' AND (meta->>'step')::int >= 3) OR type = 'onboarding_completed')::int AS step3,
+                    COUNT(DISTINCT user_id) FILTER (WHERE (type = 'onboarding_step' AND (meta->>'step')::int >= 4) OR type = 'onboarding_completed')::int AS step4,
+                    COUNT(DISTINCT user_id) FILTER (WHERE (type = 'onboarding_step' AND (meta->>'step')::int >= 5) OR type = 'onboarding_completed')::int AS step5,
+                    COUNT(DISTINCT user_id) FILTER (WHERE type = 'onboarding_completed')::int AS completed,
+                    COUNT(DISTINCT user_id) FILTER (WHERE type = 'onboarding_skipped')::int AS skipped,
+                    COUNT(DISTINCT user_id) FILTER (WHERE type = 'onboarding_ai_handoff')::int AS ai_handoff,
+                    COUNT(DISTINCT user_id) FILTER (WHERE type = 'onboarding_usuals_typed')::int AS usuals_typed,
+                    COUNT(DISTINCT user_id) FILTER (WHERE type = 'onboarding_completed' AND (meta->>'added')::int > 0)::int AS added_from_list,
+                    COUNT(DISTINCT user_id) FILTER (WHERE type = 'onboarding_completed' AND COALESCE((meta->>'usuals')::int, 0) > 0)::int AS added_own,
+                    COUNT(DISTINCT user_id) FILTER (WHERE type = 'onboarding_completed' AND COALESCE((meta->>'added')::int, 0) = 0 AND COALESCE((meta->>'usuals_written')::int, 0) = 0)::int AS completed_empty,
+                    percentile_cont(0.5) WITHIN GROUP (ORDER BY (meta->>'ms')::float) FILTER (WHERE type = 'onboarding_completed' AND meta ? 'ms') AS median_ms
+                 FROM e`,
+                [days],
+            ),
+            pool.query(
+                `SELECT (meta->>'step')::int AS step, (meta->>'soft')::boolean AS soft, COUNT(DISTINCT user_id)::int AS n
+                 FROM app_events WHERE type = 'onboarding_skipped' AND user_id IS NOT NULL AND ${win}
+                 GROUP BY 1, 2 ORDER BY 1, 2`,
+                [days],
+            ),
+            pool.query(
+                `WITH last AS (
+                    SELECT DISTINCT ON (user_id) user_id, meta FROM app_events
+                    WHERE type IN ('onboarding_completed', 'onboarding_ai_handoff') AND user_id IS NOT NULL AND ${win}
+                    ORDER BY user_id, created_at DESC)
+                 SELECT COUNT(*)::int AS answered,
+                        COUNT(*) FILTER (WHERE jsonb_array_length(COALESCE(meta->'diets', '[]'::jsonb)) > 0)::int AS with_diets,
+                        COUNT(*) FILTER (WHERE jsonb_array_length(COALESCE(meta->'proteins', '[]'::jsonb)) > 0)::int AS with_proteins
+                 FROM last`,
+                [days],
+            ),
+            pool.query(
+                `SELECT d AS diet, COUNT(DISTINCT user_id)::int AS n
+                 FROM app_events, jsonb_array_elements_text(COALESCE(meta->'diets', '[]'::jsonb)) AS d
+                 WHERE type IN ('onboarding_completed', 'onboarding_ai_handoff') AND user_id IS NOT NULL AND ${win}
+                 GROUP BY 1 ORDER BY n DESC`,
+                [days],
+            ),
+            pool.query(
+                `SELECT p AS protein, COUNT(DISTINCT user_id)::int AS n
+                 FROM app_events, jsonb_array_elements_text(COALESCE(meta->'proteins', '[]'::jsonb)) AS p
+                 WHERE type = 'onboarding_completed' AND user_id IS NOT NULL AND ${win}
+                 GROUP BY 1 ORDER BY n DESC`,
+                [days],
+            ),
+            pool.query(
+                `SELECT COALESCE(meta->>'scope', 'unanswered') AS scope, COUNT(DISTINCT user_id)::int AS n
+                 FROM app_events WHERE type = 'onboarding_completed' AND user_id IS NOT NULL AND ${win} GROUP BY 1`,
+                [days],
+            ),
+            pool.query(
+                `SELECT COALESCE(AVG((meta->>'offered')::float), 0)::float AS avg_offered,
+                        COALESCE(AVG((meta->>'chosen')::float), 0)::float AS avg_chosen,
+                        COALESCE(AVG((meta->>'added')::float), 0)::float AS avg_added,
+                        COALESCE(SUM((meta->>'added')::int), 0)::int AS total_added
+                 FROM app_events WHERE type = 'onboarding_completed' AND ${win}`,
+                [days],
+            ),
+            pool.query(
+                `SELECT COUNT(*)::int AS runs,
+                        COALESCE(SUM((meta->>'requested')::int), 0)::int AS dishes,
+                        COALESCE(SUM((meta->>'written')::int), 0)::int AS written,
+                        COALESCE(SUM((meta->>'title_only')::int), 0)::int AS title_only,
+                        COALESCE(SUM((meta->>'failed')::int), 0)::int AS failed,
+                        percentile_cont(0.5) WITHIN GROUP (ORDER BY (meta->>'ms')::float) AS median_ms
+                 FROM app_events WHERE type = 'onboarding_usuals' AND ${win}`,
+                [days],
+            ),
+            // What onboarded people did in the 7 days after finishing (or skipping).
+            pool.query(
+                `WITH done AS (
+                    SELECT DISTINCT ON (user_id) user_id, type AS outcome, created_at FROM app_events
+                    WHERE type IN ('onboarding_completed', 'onboarding_skipped') AND user_id IS NOT NULL AND ${win}
+                    ORDER BY user_id, created_at DESC)
+                 SELECT outcome,
+                        COUNT(*)::int AS n,
+                        COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM app_events x WHERE x.user_id = d.user_id AND x.type = 'recipe_created' AND x.created_at BETWEEN d.created_at AND d.created_at + interval '7 days'))::int AS added_recipe,
+                        COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM app_events x WHERE x.user_id = d.user_id AND x.type = 'week_add' AND x.created_at BETWEEN d.created_at AND d.created_at + interval '7 days'))::int AS planned_week,
+                        COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM app_events x WHERE x.user_id = d.user_id AND x.type = 'list_generated' AND x.created_at BETWEEN d.created_at AND d.created_at + interval '7 days'))::int AS generated_list,
+                        COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM app_events x WHERE x.user_id = d.user_id AND x.type = 'shop_finished' AND x.created_at BETWEEN d.created_at AND d.created_at + interval '7 days'))::int AS finished_shop
+                 FROM done d GROUP BY outcome`,
+                [days],
+            ),
+            pool.query(
+                `WITH shown AS (
+                    SELECT DISTINCT ON (user_id) user_id, COALESCE(meta->>'entry', 'auto') AS entry FROM app_events
+                    WHERE type = 'onboarding_shown' AND user_id IS NOT NULL AND ${win} ORDER BY user_id, created_at)
+                 SELECT s.entry, COUNT(*)::int AS shown,
+                        COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM app_events c WHERE c.user_id = s.user_id AND c.type = 'onboarding_completed' AND c.${win}))::int AS completed
+                 FROM shown s GROUP BY s.entry`,
+                [days],
+            ),
+        ]);
+
+        const f = funnelRes.rows[0];
+        const n = (v) => Number(v) || 0;
+        res.json({
+            days,
+            funnel: {
+                shown: n(f.shown), started: n(f.started), step2: n(f.step2), step3: n(f.step3), step4: n(f.step4), step5: n(f.step5),
+                completed: n(f.completed), skipped: n(f.skipped), aiHandoff: n(f.ai_handoff),
+                medianMs: f.median_ms == null ? null : Math.round(Number(f.median_ms)),
+            },
+            skipsByStep: skipsRes.rows.map((r) => ({ step: r.step, soft: Boolean(r.soft), users: r.n })),
+            byEntry: entryRes.rows.map((r) => ({ entry: r.entry, shown: r.shown, completed: r.completed })),
+            dietary: {
+                answered: n(dietRes.rows[0].answered),
+                withDiets: n(dietRes.rows[0].with_diets),
+                withProteins: n(dietRes.rows[0].with_proteins),
+                diets: dietsRes.rows.map((r) => ({ label: r.diet, value: r.n })),
+                proteins: proteinsRes.rows.map((r) => ({ label: r.protein, value: r.n })),
+                scope: scopeRes.rows.map((r) => ({ label: r.scope, value: r.n })),
+            },
+            starters: {
+                avgOffered: Math.round(Number(startersRes.rows[0].avg_offered) * 10) / 10,
+                avgChosen: Math.round(Number(startersRes.rows[0].avg_chosen) * 10) / 10,
+                avgAdded: Math.round(Number(startersRes.rows[0].avg_added) * 10) / 10,
+                totalAdded: n(startersRes.rows[0].total_added),
+                addedFromList: n(f.added_from_list),
+            },
+            usuals: {
+                typed: n(f.usuals_typed),
+                addedOwn: n(f.added_own),
+                runs: n(usualsRes.rows[0].runs),
+                dishes: n(usualsRes.rows[0].dishes),
+                written: n(usualsRes.rows[0].written),
+                titleOnly: n(usualsRes.rows[0].title_only),
+                failed: n(usualsRes.rows[0].failed),
+                medianMs: usualsRes.rows[0].median_ms == null ? null : Math.round(Number(usualsRes.rows[0].median_ms)),
+            },
+            outcomes: { completedEmpty: n(f.completed_empty) },
+            followThrough: followRes.rows.map((r) => ({
+                outcome: r.outcome === "onboarding_completed" ? "completed" : "skipped",
+                users: r.n, addedRecipe: r.added_recipe, plannedWeek: r.planned_week, generatedList: r.generated_list, finishedShop: r.finished_shop,
+            })),
+            generated_at: new Date().toISOString(),
+        });
+    } catch (error) {
+        next(error);
+    }
+}
+
 // ===== Config (admin writes) =====
 // The knobs in app_config (lib/config.js): trial length, allowances, weights,
 // free-tier household size, founders' offer. A change applies to households
@@ -956,6 +1197,8 @@ module.exports = {
     users,
     aiStats,
     creditStats,
+    history,
+    onboardingStats,
     getConfig: getConfigHandler,
     putConfig: putConfigHandler,
     aisleReview,

@@ -52,7 +52,7 @@ async function createRecipe(req, res, next) {
         db.recordEvent("recipe_created", {
             userId: req.user.id,
             householdId: req.householdId,
-            meta: newRecipeId ? { recipe_id: newRecipeId } : null,
+            meta: { recipe_id: newRecipeId ?? null, source: data.recipe_source ?? "manual" },
         });
         res.status(201).json({ success: true });
     } catch (error) {

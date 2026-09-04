@@ -36,6 +36,9 @@ const ALLOWED = new Set([
     // per household/stage/channel (unique index, migration 017) — repeats are
     // dropped by the database, so a client can't inflate the funnel.
     "trial_prompt",
+    // Just before Stripe Checkout opens: which interval, whether the founders'
+    // coupon applied, and which CTA brought them to /premium (`from`).
+    "checkout_started",
 ]);
 
 const { alertNewIosMajor } = require("../lib/install");
@@ -87,6 +90,13 @@ function cleanMeta(type, raw) {
         set("stage", ["ending_soon", "last_day", "ended"].includes(m.stage) ? m.stage : undefined);
         set("channel", "app");
     }
+    if (type === "checkout_started") {
+        set("interval", m.interval === "year" ? "year" : "month");
+        set("founders", m.founders === true);
+        set("from", str(m.from, 40));
+    }
+    // How long the questionnaire took, shown → done (ms).
+    if (type === "onboarding_completed" || type === "onboarding_skipped") set("ms", num(m.ms));
 
     if (Object.keys(out).length === 0) return null;
     // Belt and braces against an unexpectedly large payload reaching JSONB.

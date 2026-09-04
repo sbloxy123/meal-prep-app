@@ -10,6 +10,9 @@ adminRouter.get("/users", adminController.users);
 adminRouter.get("/ai", adminController.aiStats);
 // The credit model in numbers: per-plan usage distribution, ceiling hits, trial funnel.
 adminRouter.get("/credits", adminController.creditStats);
+// Daily snapshots rolled up by month (+ ?format=csv), and the questionnaire funnel.
+adminRouter.get("/history", adminController.history);
+adminRouter.get("/onboarding", adminController.onboardingStats);
 // app_config knobs (trial length, allowances, weights, member limit, founders).
 adminRouter.get("/config", adminController.getConfig);
 adminRouter.put("/config", adminController.putConfig);
