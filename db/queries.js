@@ -960,20 +960,71 @@ async function acceptInvite(userId, token) {
         const current = curRows[0]?.household_id ?? null;
 
         if (current !== target) {
+            // Lock the target so two people accepting at once can't both take
+            // the last free seat, then apply the target's member limit (free
+            // households only; premium/trial have none). The invite may have
+            // been sent while the target was still on its trial.
+            await client.query("SELECT id FROM household WHERE id = $1 FOR UPDATE", [target]);
+            const targetEnt = await getEntitlement(target, client);
+            if (targetEnt.memberLimit != null) {
+                const { rows: tc } = await client.query(
+                    "SELECT COUNT(*)::int AS n FROM household_member WHERE household_id = $1",
+                    [target],
+                );
+                if (tc[0].n >= targetEnt.memberLimit) {
+                    throw withStatus(
+                        `${invite.household_name || "That household"} is full on its current plan — the owner can add more people with Premium.`,
+                        402,
+                        "HOUSEHOLD_LIMIT",
+                    );
+                }
+            }
+
             let soleMember = false;
+            let currentRow = null;
             if (current) {
                 const { rows: cnt } = await client.query(
                     "SELECT COUNT(*)::int AS n FROM household_member WHERE household_id = $1",
                     [current],
                 );
                 soleMember = cnt[0].n === 1;
+                const { rows: cr } = await client.query(
+                    "SELECT plan, premium_until, stripe_subscription_id, premium_payer_user_id FROM household WHERE id = $1",
+                    [current],
+                );
+                currentRow = cr[0] ?? null;
+            }
+
+            // A paying member can't move: their Stripe subscription is keyed to
+            // them and would keep billing a household they'd just left (or be
+            // silently re-synced onto the target). Cancel or move billing first.
+            if (currentRow && (currentRow.stripe_subscription_id || currentRow.premium_payer_user_id === userId)) {
+                throw withStatus(
+                    "You're paying for your current household's Premium. Cancel it from your Account page first, then accept this invite.",
+                    409,
+                    "PREMIUM_MERGE",
+                );
             }
 
             if (current && soleMember) {
-                // Merge the joiner's solo data into the target household.
+                // Merge the joiner's solo data into the target household — and
+                // their AI usage, so this period's credits follow them.
                 await client.query("UPDATE recipes SET household_id = $1 WHERE household_id = $2", [target, current]);
                 await client.query("UPDATE shopping_list SET household_id = $1 WHERE household_id = $2", [target, current]);
                 await client.query("UPDATE generated_shopping_list SET household_id = $1 WHERE household_id = $2", [target, current]);
+                await client.query("UPDATE ai_usage SET household_id = $1 WHERE household_id = $2", [target, current]);
+                // A comped solo joiner carries the comp with them if the target
+                // household isn't already premium.
+                const comped =
+                    currentRow?.plan === "premium" &&
+                    !currentRow.stripe_subscription_id &&
+                    (currentRow.premium_until == null || new Date(currentRow.premium_until) > new Date());
+                if (comped && targetEnt.plan !== "premium") {
+                    await client.query(
+                        "UPDATE household SET plan = 'premium', premium_until = NULL, premium_credit_allowance = NULL WHERE id = $1",
+                        [target],
+                    );
+                }
             }
 
             await client.query(
@@ -1003,7 +1054,31 @@ async function acceptInvite(userId, token) {
 // Move a user out of their current household into a fresh solo one they own.
 // Shared data stays with the old household. Used by leave and remove-member.
 async function moveUserToNewHousehold(client, userId, name) {
+    const { rows: oldRows } = await client.query(
+        `SELECT h.id, h.plan, h.premium_until, h.stripe_customer_id, h.stripe_subscription_id,
+                h.premium_payer_user_id, h.billing_interval, h.founder
+         FROM household h JOIN household_member hm ON hm.household_id = h.id
+         WHERE hm.user_id = $1`,
+        [userId],
+    );
+    const old = oldRows[0] ?? null;
     const { id: newId } = await insertHousehold(client, { name: name || "My kitchen", userId });
+    // Entitlement follows the payer: their subscription moves to the new
+    // household and the one they left drops to free (it was their money).
+    if (old && old.premium_payer_user_id === userId && old.stripe_subscription_id) {
+        await client.query(
+            `UPDATE household SET plan = 'premium', premium_until = $2, stripe_customer_id = $3,
+                    stripe_subscription_id = $4, premium_payer_user_id = $5, billing_interval = $6, founder = $7
+             WHERE id = $1`,
+            [newId, old.premium_until, old.stripe_customer_id, old.stripe_subscription_id, userId, old.billing_interval, old.founder],
+        );
+        await client.query(
+            `UPDATE household SET plan = 'free', premium_until = NULL, stripe_subscription_id = NULL,
+                    premium_payer_user_id = NULL, billing_interval = NULL
+             WHERE id = $1`,
+            [old.id],
+        );
+    }
     await client.query(
         `INSERT INTO household_member (household_id, user_id, role)
          VALUES ($1, $2, 'owner')
