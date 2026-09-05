@@ -115,7 +115,7 @@ Two constraints drive this order:
 | `householdRouter` | `/household` | household + members + pending invites (`GET`), `POST /invite` `/accept` `/leave`, `DELETE /invite/:id` `/member/:id`, `PUT /` (rename) |
 | `installRouter` | `/install` | `POST /email` — resend the install-guide email (3/user/24h) |
 | `premiumRouter` | `/premium` | `POST /cta` (upsell funnel taps), `GET /offers` (monthly / yearly / founders' availability) |
-| `adminRouter` | `/admin` (ADMIN_EMAILS only) | `/overview`, `/users`, `/ai` (ledger), `/credits` (credit model + trial funnel + subscriptions), `/history` (daily snapshots by month, `?format=csv`), `/onboarding` (questionnaire funnel), `GET/PUT /config` (Plan settings), `/aisles*` (cache review), `/premium/*` (comps) |
+| `adminRouter` | `/admin` (ADMIN_EMAILS only) | `/overview`, `/users`, `/ai` (ledger), `/credits` (credit model + trial funnel + subscriptions), `/history` (daily snapshots by month, `?format=csv`), `/onboarding` (questionnaire funnel), `/recipes/overview` (what people add, anonymous), `/users/:id` (one person: plan, activity, recipe titles — logged as `admin_viewed_user`), `/recipes/:id?reason=` (the full recipe, reason required, logged as `admin_viewed_recipe`), `/access-log`, `GET/PUT /config` (Plan settings), `/aisles*` (cache review), `/premium/*` (comps) |
 
 ### Authentication
 

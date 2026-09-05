@@ -855,6 +855,188 @@ async function onboardingStats(req, res, next) {
     }
 }
 
+// ===== Recipes: what people add, and one person's list =====
+// Aggregate first (nobody named), then per user (titles + metadata), then the
+// full recipe only on demand with a reason — every per-user look is logged as
+// admin_viewed_user / admin_viewed_recipe so there is a record of who read what.
+
+const RECIPE_SOURCES = ["manual", "import", "photo", "generate", "social", "share", "starter", "usuals"];
+
+// GET /admin/recipes/overview?days=30
+async function recipesOverview(req, res, next) {
+    try {
+        let days = parseInt(req.query.days, 10);
+        if (!ALLOWED_DAYS.includes(days)) days = 30;
+        const [sourcesRes, shapeRes, repeatsRes, recentRes, tagsRes] = await Promise.all([
+            pool.query(
+                `SELECT COALESCE(meta->>'source', 'unknown') AS source, COUNT(*)::int AS n
+                 FROM app_events WHERE type = 'recipe_created' AND created_at >= now() - ($1::int || ' days')::interval
+                 GROUP BY 1 ORDER BY n DESC`,
+                [days],
+            ),
+            pool.query(
+                `SELECT COUNT(*)::int AS recipes,
+                        COUNT(*) FILTER (WHERE image_url IS NOT NULL)::int AS with_photo,
+                        COUNT(*) FILTER (WHERE link_url IS NOT NULL AND link_url <> '')::int AS with_link,
+                        COUNT(*) FILTER (WHERE favorite)::int AS favourited,
+                        COUNT(*) FILTER (WHERE macros_source IS NOT NULL)::int AS with_macros,
+                        COALESCE(AVG(ing.n), 0)::float AS avg_ingredients,
+                        COALESCE(AVG(array_length(string_to_array(COALESCE(instructions, ''), E'\\n'), 1)), 0)::float AS avg_steps,
+                        COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM app_events e WHERE e.type = 'week_add' AND (e.meta->>'recipe_id')::int = r.id))::int AS ever_on_menu
+                 FROM recipes r
+                 LEFT JOIN LATERAL (SELECT COUNT(*)::int AS n FROM recipe_ingredients ri WHERE ri.recipe_id = r.id) ing ON true
+                 WHERE r.created_at >= now() - ($1::int || ' days')::interval`,
+                [days],
+            ),
+            pool.query(
+                `SELECT lower(regexp_replace(trim(title), '\\s+', ' ', 'g')) AS title, COUNT(DISTINCT household_id)::int AS households, COUNT(*)::int AS n
+                 FROM recipes WHERE title IS NOT NULL
+                 GROUP BY 1 HAVING COUNT(DISTINCT household_id) >= 2
+                 ORDER BY households DESC, n DESC LIMIT 25`,
+            ),
+            pool.query(
+                `SELECT r.id, r.title, r.created_at, r.is_on_menu, r.favorite, (r.image_url IS NOT NULL) AS has_photo,
+                        left(md5(COALESCE(r.household_id, '')), 6) AS household_key,
+                        (SELECT e.meta->>'source' FROM app_events e WHERE e.type = 'recipe_created' AND (e.meta->>'recipe_id')::int = r.id LIMIT 1) AS source,
+                        COALESCE((SELECT array_agg(t.name ORDER BY t.name) FROM recipe_tags rt JOIN tags t ON t.id = rt.tag_id WHERE rt.recipe_id = r.id), '{}') AS tags
+                 FROM recipes r ORDER BY r.created_at DESC NULLS LAST, r.id DESC LIMIT 50`,
+            ),
+            pool.query(
+                `SELECT t.name, COUNT(DISTINCT r.household_id)::int AS households, COUNT(*)::int AS n
+                 FROM recipe_tags rt JOIN tags t ON t.id = rt.tag_id JOIN recipes r ON r.id = rt.recipe_id
+                 WHERE r.created_at >= now() - ($1::int || ' days')::interval
+                 GROUP BY t.name ORDER BY n DESC LIMIT 15`,
+                [days],
+            ),
+        ]);
+        const s = shapeRes.rows[0];
+        const sources = Object.fromEntries(RECIPE_SOURCES.map((k) => [k, 0]));
+        for (const r of sourcesRes.rows) sources[r.source in sources ? r.source : "unknown"] = (sources[r.source] ?? 0) + Number(r.n);
+        res.json({
+            days,
+            sources,
+            shape: {
+                recipes: Number(s.recipes), withPhoto: Number(s.with_photo), withLink: Number(s.with_link), favourited: Number(s.favourited),
+                withMacros: Number(s.with_macros), avgIngredients: Math.round(Number(s.avg_ingredients) * 10) / 10,
+                avgSteps: Math.round(Number(s.avg_steps) * 10) / 10, everOnMenu: Number(s.ever_on_menu),
+            },
+            repeats: repeatsRes.rows.map((r) => ({ title: r.title, households: r.households, count: r.n })),
+            topTags: tagsRes.rows.map((r) => ({ name: r.name, households: r.households, count: r.n })),
+            recent: recentRes.rows.map((r) => ({
+                id: r.id, title: r.title, created_at: r.created_at, on_menu: r.is_on_menu, favourite: r.favorite, has_photo: r.has_photo,
+                household_key: r.household_key, source: r.source ?? null, tags: r.tags ?? [],
+            })),
+            generated_at: new Date().toISOString(),
+        });
+    } catch (error) {
+        next(error);
+    }
+}
+
+// GET /admin/users/:id — one person: plan, household, activity, recipe list
+// (titles + metadata only). Logged.
+async function userDetail(req, res, next) {
+    try {
+        const id = String(req.params.id ?? "");
+        const { rows: urows } = await pool.query(
+            `SELECT u.id, u.name, u.email, u."createdAt" AS created_at, u."emailVerified" AS email_verified,
+                    hm.household_id, hm.role, hm.onboarding_outcome, hm.onboarded_at, h.name AS household_name
+             FROM "user" u
+             LEFT JOIN household_member hm ON hm.user_id = u.id
+             LEFT JOIN household h ON h.id = hm.household_id
+             WHERE u.id = $1`,
+            [id],
+        );
+        const u = urows[0];
+        if (!u) return res.status(404).json({ error: "No such user." });
+        const householdId = u.household_id;
+        const [entitlement, members, recipesRes, activityRes, aiRes] = await Promise.all([
+            householdId ? db.getEntitlement(householdId) : Promise.resolve(null),
+            householdId ? db.getHouseholdMembers(householdId) : Promise.resolve([]),
+            householdId
+                ? pool.query(
+                      `SELECT r.id, r.title, r.created_at, r.is_on_menu, r.favorite, (r.image_url IS NOT NULL) AS has_photo,
+                              (r.link_url IS NOT NULL AND r.link_url <> '') AS has_link, r.macros_source, r.user_id,
+                              (SELECT e.meta->>'source' FROM app_events e WHERE e.type = 'recipe_created' AND (e.meta->>'recipe_id')::int = r.id LIMIT 1) AS source,
+                              COALESCE((SELECT array_agg(t.name ORDER BY t.name) FROM recipe_tags rt JOIN tags t ON t.id = rt.tag_id WHERE rt.recipe_id = r.id), '{}') AS tags,
+                              (SELECT COUNT(*)::int FROM recipe_ingredients ri WHERE ri.recipe_id = r.id) AS ingredients,
+                              (SELECT COUNT(*)::int FROM app_events e WHERE e.type = 'week_add' AND (e.meta->>'recipe_id')::int = r.id) AS times_on_menu
+                       FROM recipes r WHERE r.household_id = $1 ORDER BY r.created_at DESC NULLS LAST, r.id DESC`,
+                      [householdId],
+                  )
+                : Promise.resolve({ rows: [] }),
+            pool.query(
+                `SELECT type, created_at, meta FROM app_events
+                 WHERE (user_id = $1 OR (household_id = $2 AND user_id IS NULL))
+                   AND type IN ('onboarding_shown','onboarding_completed','onboarding_skipped','week_add','list_generated','shop_finished',
+                                'trial_started','trial_prompt','trial_converted','checkout_started','subscription_cancelled','household_limit_hit',
+                                'premium_cta','install_standalone_open','recipe_created','recipe_shared')
+                 ORDER BY created_at DESC LIMIT 60`,
+                [id, householdId],
+            ),
+            householdId
+                ? pool.query(
+                      `SELECT action, COUNT(*) FILTER (WHERE status <> 'rejected')::int AS n, COALESCE(SUM(cost_pence), 0)::float AS cost_pence
+                       FROM ai_usage WHERE household_id = $1 GROUP BY action ORDER BY n DESC`,
+                      [householdId],
+                  )
+                : Promise.resolve({ rows: [] }),
+        ]);
+        db.recordEvent("admin_viewed_user", { userId: req.user.id, householdId, meta: { target: id, admin: req.user.email } });
+        const { householdId: _h, stripeSubscriptionId: _s, premiumPayerUserId: _p, ...ent } = entitlement ?? {};
+        res.json({
+            user: { id: u.id, name: u.name, email: u.email, created_at: u.created_at, email_verified: u.email_verified, role: u.role, onboarding_outcome: u.onboarding_outcome, onboarded_at: u.onboarded_at },
+            household: householdId ? { id: householdId, name: u.household_name, members: members.map((m) => ({ user_id: m.user_id, name: m.name, email: m.email, role: m.role })) } : null,
+            entitlement: entitlement ? ent : null,
+            recipes: recipesRes.rows.map((r) => ({ ...r, tags: r.tags ?? [], mine: r.user_id === id })),
+            activity: activityRes.rows.map((r) => ({ type: r.type, at: r.created_at, meta: r.meta })),
+            ai: aiRes.rows.map((r) => ({ action: r.action, count: r.n, costPence: Number(r.cost_pence) })),
+        });
+    } catch (error) {
+        next(error);
+    }
+}
+
+// GET /admin/recipes/:id?reason=… — the full recipe, any household. The reason
+// is required and stored with the log entry; this is the intrusive step.
+async function recipeDetail(req, res, next) {
+    try {
+        const id = Number.parseInt(req.params.id, 10);
+        const reason = typeof req.query.reason === "string" ? req.query.reason.trim().slice(0, 140) : "";
+        if (!Number.isInteger(id)) return res.status(400).json({ error: "A valid id is required." });
+        if (reason.length < 3) return res.status(400).json({ error: "Say why you're opening this recipe (a few words)." });
+        const { rows } = await pool.query(
+            `SELECT r.*, u.email AS added_by_email,
+                    COALESCE((SELECT array_agg(t.name ORDER BY t.name) FROM recipe_tags rt JOIN tags t ON t.id = rt.tag_id WHERE rt.recipe_id = r.id), '{}') AS tags,
+                    COALESCE((SELECT json_agg(json_build_object('name', i.name, 'quantity', ri.quantity, 'unit', ri.unit) ORDER BY ri.ingredient_id)
+                              FROM recipe_ingredients ri JOIN ingredients i ON i.id = ri.ingredient_id WHERE ri.recipe_id = r.id), '[]') AS ingredients
+             FROM recipes r LEFT JOIN "user" u ON u.id = r.user_id WHERE r.id = $1`,
+            [id],
+        );
+        const r = rows[0];
+        if (!r) return res.status(404).json({ error: "No such recipe." });
+        db.recordEvent("admin_viewed_recipe", { userId: req.user.id, householdId: r.household_id, meta: { recipe_id: id, target: r.user_id, admin: req.user.email, reason } });
+        res.json({ recipe: r });
+    } catch (error) {
+        next(error);
+    }
+}
+
+// GET /admin/access-log — the last 100 admin views.
+async function accessLog(req, res, next) {
+    try {
+        const { rows } = await pool.query(
+            `SELECT e.type, e.created_at, e.meta, u.email AS target_email
+             FROM app_events e LEFT JOIN "user" u ON u.id = e.meta->>'target'
+             WHERE e.type IN ('admin_viewed_user', 'admin_viewed_recipe')
+             ORDER BY e.created_at DESC LIMIT 100`,
+        );
+        res.json({ entries: rows.map((r) => ({ type: r.type, at: r.created_at, admin: r.meta?.admin ?? null, target: r.target_email ?? r.meta?.target ?? null, recipe_id: r.meta?.recipe_id ?? null, reason: r.meta?.reason ?? null })) });
+    } catch (error) {
+        next(error);
+    }
+}
+
 // ===== Config (admin writes) =====
 // The knobs in app_config (lib/config.js): trial length, allowances, weights,
 // free-tier household size, founders' offer. A change applies to households
@@ -1199,6 +1381,10 @@ module.exports = {
     creditStats,
     history,
     onboardingStats,
+    recipesOverview,
+    userDetail,
+    recipeDetail,
+    accessLog,
     getConfig: getConfigHandler,
     putConfig: putConfigHandler,
     aisleReview,
