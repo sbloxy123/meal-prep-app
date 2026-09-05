@@ -18,6 +18,8 @@ adminRouter.get("/recipes/overview", adminController.recipesOverview);
 adminRouter.get("/recipes/:id", adminController.recipeDetail);
 adminRouter.get("/users/:id", adminController.userDetail);
 adminRouter.get("/access-log", adminController.accessLog);
+// Installed-app tracking: who launches from a home screen, and how they use it vs the browser.
+adminRouter.get("/installs", adminController.installStats);
 // app_config knobs (trial length, allowances, weights, member limit, founders).
 adminRouter.get("/config", adminController.getConfig);
 adminRouter.put("/config", adminController.putConfig);

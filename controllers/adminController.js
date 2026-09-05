@@ -390,7 +390,8 @@ async function users(req, res, next) {
                 to_jsonb(ai)                   AS ai_usage_json,
                 COALESCE(sh.shares_created, 0) AS shares_created,
                 COALESCE(ev.week_adds, 0)      AS week_adds,
-                COALESCE(ev.lists_generated, 0) AS lists_generated
+                COALESCE(ev.lists_generated, 0) AS lists_generated,
+                u.installed_at, u.installed_platform, u.last_standalone_at
             FROM "user" u
             LEFT JOIN LATERAL (
                 SELECT MAX(GREATEST(se."createdAt", se."updatedAt")) AS last_active,
@@ -440,6 +441,9 @@ async function users(req, res, next) {
                 plan: r.household_plan ?? "free",
                 paid: r.household_paid ?? false,
                 recipe_count: Number(r.recipe_count),
+                installed_at: r.installed_at,
+                installed_platform: r.installed_platform,
+                last_standalone_at: r.last_standalone_at,
                 ai_usage: {
                     ...actionCounts(r.ai_usage_json),
                     cost_pence: Number(r.ai_usage_json?.cost_pence ?? 0),
@@ -628,9 +632,11 @@ const HISTORY_COLUMNS = [
 
 const SUMMED = ["signups", "active_users", "ai_actions", "ai_rejected", "ai_credits", "ai_cost_pence", "aisle_actions", "aisle_model_calls",
     "lists_generated", "week_adds", "shops_finished", "recipes_created", "trials_started", "trials_converted", "trials_expired",
-    "cancellations", "subscriptions_ended", "seat_hits", "cta_taps", "checkouts_started", "onboarding_shown", "onboarding_completed", "onboarding_skipped"];
+    "cancellations", "subscriptions_ended", "seat_hits", "cta_taps", "checkouts_started", "onboarding_shown", "onboarding_completed", "onboarding_skipped",
+    "standalone_active_users"];
 const STOCKS = ["users", "verified_users", "households", "multi_member_households", "premium_households", "paid_households", "comped_households",
-    "subs_monthly", "subs_annual", "subs_founders", "mrr_pence", "recipes", "trials_active", "aisle_rows", "active_7d", "active_30d"];
+    "subs_monthly", "subs_annual", "subs_founders", "mrr_pence", "recipes", "trials_active", "aisle_rows", "active_7d", "active_30d",
+    "installed_users", "standalone_active_7d", "standalone_active_30d"];
 
 // Roll daily snapshots up into months: stocks from the last day, flows summed,
 // retention weighted by cohort. The current month is flagged partial.
@@ -933,6 +939,161 @@ async function recipesOverview(req, res, next) {
     }
 }
 
+// GET /admin/installs?days=30 — who has put Fornetto on a home screen, and
+// whether it changes how they use it. "Installed" = at least one launch in
+// standalone display-mode (user.installed_at, migration 021); iOS gives no
+// other signal. The comparison is installed users vs everyone else over the
+// window — installed people are self-selected (they came back at least once),
+// so read it as "how the two groups behave", not as the effect of installing.
+async function installStats(req, res, next) {
+    try {
+        let days = parseInt(req.query.days, 10);
+        if (!ALLOWED_DAYS.includes(days)) days = 30;
+        const win = [days];
+        const SINCE = `((now() AT TIME ZONE 'Europe/London')::date - $1::int)`;
+
+        const [totals, cohorts, platforms, compare, retention, weekly, recent] = await Promise.all([
+            pool.query(
+                `SELECT
+                    (SELECT COUNT(*) FROM "user")::int AS users,
+                    (SELECT COUNT(*) FROM "user" WHERE installed_at IS NOT NULL)::int AS installed_users,
+                    (SELECT COUNT(*) FROM "user" WHERE installed_at > now() - ($1::int || ' days')::interval)::int AS installed_in_window,
+                    (SELECT COUNT(*) FROM "user" WHERE "createdAt" > now() - ($1::int || ' days')::interval)::int AS signups_in_window,
+                    (SELECT COUNT(*) FROM "user" WHERE "createdAt" > now() - ($1::int || ' days')::interval AND installed_at IS NOT NULL)::int AS signups_installed,
+                    (SELECT COUNT(DISTINCT user_id) FROM user_activity WHERE day > ${SINCE})::int AS active_users,
+                    (SELECT COUNT(DISTINCT user_id) FROM user_activity WHERE standalone AND day > ${SINCE})::int AS standalone_active,
+                    (SELECT COUNT(*) FROM (
+                        SELECT user_id FROM user_activity WHERE day > ${SINCE}
+                        GROUP BY user_id HAVING bool_or(standalone) AND NOT bool_and(standalone)) x)::int AS mixed,
+                    (SELECT COUNT(*) FROM user_activity WHERE day > ${SINCE})::int AS active_days,
+                    (SELECT COUNT(*) FROM user_activity WHERE standalone AND day > ${SINCE})::int AS standalone_days,
+                    (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (installed_at - "createdAt")) / 86400)
+                       FROM "user" WHERE installed_at IS NOT NULL)::float AS median_days_to_install`,
+                win,
+            ),
+            pool.query(
+                `SELECT to_char(date_trunc('month', "createdAt" AT TIME ZONE 'Europe/London'), 'YYYY-MM') AS month,
+                        COUNT(*)::int AS signups,
+                        COUNT(*) FILTER (WHERE installed_at IS NOT NULL)::int AS installed,
+                        COUNT(*) FILTER (WHERE installed_at < "createdAt" + interval '1 day')::int AS installed_1d,
+                        COUNT(*) FILTER (WHERE installed_at < "createdAt" + interval '7 days')::int AS installed_7d
+                 FROM "user"
+                 WHERE "createdAt" > now() - interval '12 months'
+                 GROUP BY 1 ORDER BY 1 DESC`,
+            ),
+            pool.query(
+                `SELECT COALESCE(installed_platform, 'unknown') AS platform, COUNT(*)::int AS n
+                 FROM "user" WHERE installed_at IS NOT NULL GROUP BY 1 ORDER BY 2 DESC`,
+            ),
+            pool.query(
+                `WITH act AS (
+                    SELECT user_id, COUNT(*)::int AS days, COUNT(*) FILTER (WHERE standalone)::int AS sa_days
+                    FROM user_activity WHERE day > ${SINCE} GROUP BY user_id
+                 ), ev AS (
+                    SELECT user_id,
+                           COUNT(*) FILTER (WHERE type = 'recipe_created')::int AS recipes,
+                           COUNT(*) FILTER (WHERE type = 'list_generated')::int AS lists,
+                           COUNT(*) FILTER (WHERE type = 'shop_finished')::int AS shops,
+                           COUNT(*) FILTER (WHERE type = 'week_add')::int AS week_adds
+                    FROM app_events
+                    WHERE user_id IS NOT NULL AND created_at > now() - ($1::int || ' days')::interval
+                    GROUP BY user_id
+                 ), u AS (
+                    SELECT u.id, (u.installed_at IS NOT NULL) AS installed,
+                           COALESCE(h.plan = 'premium' AND h.stripe_subscription_id IS NOT NULL, false) AS paying
+                    FROM "user" u
+                    LEFT JOIN household_member hm ON hm.user_id = u.id
+                    LEFT JOIN household h ON h.id = hm.household_id
+                 )
+                 SELECT u.installed,
+                        COUNT(*)::int AS users,
+                        COUNT(act.user_id)::int AS active,
+                        COALESCE(AVG(act.days), 0)::float AS avg_active_days,
+                        COALESCE(AVG(COALESCE(ev.recipes, 0)) FILTER (WHERE act.user_id IS NOT NULL), 0)::float AS avg_recipes,
+                        COALESCE(AVG(COALESCE(ev.lists, 0)) FILTER (WHERE act.user_id IS NOT NULL), 0)::float AS avg_lists,
+                        COALESCE(AVG(COALESCE(ev.shops, 0)) FILTER (WHERE act.user_id IS NOT NULL), 0)::float AS avg_shops,
+                        COALESCE(AVG(COALESCE(ev.week_adds, 0)) FILTER (WHERE act.user_id IS NOT NULL), 0)::float AS avg_week_adds,
+                        COUNT(*) FILTER (WHERE ev.shops > 0)::int AS shopped,
+                        COUNT(*) FILTER (WHERE u.paying)::int AS paying
+                 FROM u LEFT JOIN act ON act.user_id = u.id LEFT JOIN ev ON ev.user_id = u.id
+                 GROUP BY u.installed`,
+                win,
+            ),
+            pool.query(
+                `SELECT (installed_at IS NOT NULL) AS installed,
+                        COUNT(*) FILTER (WHERE "createdAt" < now() - interval '7 days')::int AS d7_cohort,
+                        COUNT(*) FILTER (WHERE "createdAt" < now() - interval '7 days' AND EXISTS (
+                            SELECT 1 FROM user_activity a WHERE a.user_id = u.id
+                              AND a.day >= (u."createdAt" AT TIME ZONE 'Europe/London')::date + 7))::int AS d7_retained,
+                        COUNT(*) FILTER (WHERE "createdAt" < now() - interval '30 days')::int AS d30_cohort,
+                        COUNT(*) FILTER (WHERE "createdAt" < now() - interval '30 days' AND EXISTS (
+                            SELECT 1 FROM user_activity a WHERE a.user_id = u.id
+                              AND a.day >= (u."createdAt" AT TIME ZONE 'Europe/London')::date + 30))::int AS d30_retained
+                 FROM "user" u GROUP BY 1`,
+            ),
+            pool.query(
+                `SELECT to_char(date_trunc('week', day), 'YYYY-MM-DD') AS week,
+                        COUNT(DISTINCT user_id)::int AS active,
+                        COUNT(DISTINCT user_id) FILTER (WHERE standalone)::int AS in_app
+                 FROM user_activity WHERE day > ${SINCE}
+                 GROUP BY 1 ORDER BY 1`,
+                win,
+            ),
+            pool.query(
+                `SELECT u.id, u.name, u.email, u."createdAt" AS created_at, u.installed_at, u.installed_platform, u.last_standalone_at,
+                        (SELECT COUNT(*) FROM user_activity a WHERE a.user_id = u.id AND a.day > (now() AT TIME ZONE 'Europe/London')::date - 30)::int AS active_days_30,
+                        (SELECT COUNT(*) FROM user_activity a WHERE a.user_id = u.id AND a.standalone AND a.day > (now() AT TIME ZONE 'Europe/London')::date - 30)::int AS standalone_days_30
+                 FROM "user" u WHERE u.installed_at IS NOT NULL
+                 ORDER BY u.installed_at DESC LIMIT 25`,
+            ),
+        ]);
+
+        const t = totals.rows[0];
+        const group = (installed) => {
+            const c = compare.rows.find((r) => r.installed === installed) ?? {};
+            const r = retention.rows.find((x) => x.installed === installed) ?? {};
+            const round1 = (v) => Math.round((Number(v) || 0) * 10) / 10;
+            return {
+                users: c.users ?? 0,
+                active: c.active ?? 0,
+                avgActiveDays: round1(c.avg_active_days),
+                avgRecipes: round1(c.avg_recipes),
+                avgLists: round1(c.avg_lists),
+                avgShops: round1(c.avg_shops),
+                avgWeekAdds: round1(c.avg_week_adds),
+                shopped: c.shopped ?? 0,
+                paying: c.paying ?? 0,
+                d7: { cohort: r.d7_cohort ?? 0, retained: r.d7_retained ?? 0 },
+                d30: { cohort: r.d30_cohort ?? 0, retained: r.d30_retained ?? 0 },
+            };
+        };
+
+        res.json({
+            days,
+            totals: {
+                users: t.users,
+                installedUsers: t.installed_users,
+                installedInWindow: t.installed_in_window,
+                signupsInWindow: t.signups_in_window,
+                signupsInstalled: t.signups_installed,
+                activeUsers: t.active_users,
+                standaloneActive: t.standalone_active,
+                mixed: t.mixed,
+                activeDays: t.active_days,
+                standaloneDays: t.standalone_days,
+                medianDaysToInstall: t.median_days_to_install == null ? null : Math.round(t.median_days_to_install * 10) / 10,
+            },
+            cohorts: cohorts.rows,
+            platforms: platforms.rows,
+            compare: { installed: group(true), browser: group(false) },
+            weekly: weekly.rows.map((w) => ({ week: w.week, active: w.active, inApp: w.in_app, browserOnly: w.active - w.in_app })),
+            recent: recent.rows,
+        });
+    } catch (error) {
+        next(error);
+    }
+}
+
 // GET /admin/users/:id — one person: plan, household, activity, recipe list
 // (titles + metadata only). Logged.
 async function userDetail(req, res, next) {
@@ -940,7 +1101,10 @@ async function userDetail(req, res, next) {
         const id = String(req.params.id ?? "");
         const { rows: urows } = await pool.query(
             `SELECT u.id, u.name, u.email, u."createdAt" AS created_at, u."emailVerified" AS email_verified,
-                    hm.household_id, hm.role, hm.onboarding_outcome, hm.onboarded_at, h.name AS household_name
+                    hm.household_id, hm.role, hm.onboarding_outcome, hm.onboarded_at, h.name AS household_name,
+                    u.installed_at, u.installed_platform, u.last_standalone_at,
+                    (SELECT COUNT(*) FROM user_activity a WHERE a.user_id = u.id AND a.day > (now() AT TIME ZONE 'Europe/London')::date - 30)::int AS active_days_30,
+                    (SELECT COUNT(*) FROM user_activity a WHERE a.user_id = u.id AND a.standalone AND a.day > (now() AT TIME ZONE 'Europe/London')::date - 30)::int AS standalone_days_30
              FROM "user" u
              LEFT JOIN household_member hm ON hm.user_id = u.id
              LEFT JOIN household h ON h.id = hm.household_id
@@ -985,7 +1149,12 @@ async function userDetail(req, res, next) {
         db.recordEvent("admin_viewed_user", { userId: req.user.id, householdId, meta: { target: id, admin: req.user.email } });
         const { householdId: _h, stripeSubscriptionId: _s, premiumPayerUserId: _p, ...ent } = entitlement ?? {};
         res.json({
-            user: { id: u.id, name: u.name, email: u.email, created_at: u.created_at, email_verified: u.email_verified, role: u.role, onboarding_outcome: u.onboarding_outcome, onboarded_at: u.onboarded_at },
+            user: {
+                id: u.id, name: u.name, email: u.email, created_at: u.created_at, email_verified: u.email_verified, role: u.role,
+                onboarding_outcome: u.onboarding_outcome, onboarded_at: u.onboarded_at,
+                installed_at: u.installed_at, installed_platform: u.installed_platform, last_standalone_at: u.last_standalone_at,
+                active_days_30: u.active_days_30, standalone_days_30: u.standalone_days_30,
+            },
             household: householdId ? { id: householdId, name: u.household_name, members: members.map((m) => ({ user_id: m.user_id, name: m.name, email: m.email, role: m.role })) } : null,
             entitlement: entitlement ? ent : null,
             recipes: recipesRes.rows.map((r) => ({ ...r, tags: r.tags ?? [], mine: r.user_id === id })),
@@ -1385,6 +1554,7 @@ module.exports = {
     userDetail,
     recipeDetail,
     accessLog,
+    installStats,
     getConfig: getConfigHandler,
     putConfig: putConfigHandler,
     aisleReview,
