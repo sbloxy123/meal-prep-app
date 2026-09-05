@@ -13,6 +13,11 @@ adminRouter.get("/credits", adminController.creditStats);
 // Daily snapshots rolled up by month (+ ?format=csv), and the questionnaire funnel.
 adminRouter.get("/history", adminController.history);
 adminRouter.get("/onboarding", adminController.onboardingStats);
+// What people add (anonymous), one person's list (logged), one full recipe (reason required, logged), the log.
+adminRouter.get("/recipes/overview", adminController.recipesOverview);
+adminRouter.get("/recipes/:id", adminController.recipeDetail);
+adminRouter.get("/users/:id", adminController.userDetail);
+adminRouter.get("/access-log", adminController.accessLog);
 // app_config knobs (trial length, allowances, weights, member limit, founders).
 adminRouter.get("/config", adminController.getConfig);
 adminRouter.put("/config", adminController.putConfig);

@@ -78,13 +78,15 @@ Every household carries a snapshot of the plan rules taken when it was created: 
 Back of house (`/back-of-house`, linked from the rail and Account for admin accounts) is organised in tabs:
 
 - **Overview** — users, active 7 days, day-7 retention, paying households + MRR, AI cost per paying household, trial-to-paid; alerts; and the **month-by-month table** from nightly snapshots (CSV download). Stocks are the month's last day, everything else is the month's total; greyed cells were reconstructed after the fact.
-- **Users** — one person at a time: search, segments, sort.
-- **Engagement** — active users, signups, retention, household sizes, devices, the install funnel.
+- **Users** — one person at a time: search, segments, sort. Tap a row for their plan, credits, household, activity and **recipe list (titles and metadata only)**. "Open" shows a full recipe, asks for a one-line reason, and is logged.
+- **Engagement** — active users, signups, retention, household sizes, devices, the install funnel, and **What people add**: anonymous recipe stats (source mix, photos, links, on-the-week rate, dishes recurring across households, latest titles).
 - **Onboarding** — the questionnaire step by step: where people skip, dietary answers, starters vs their own meals, and what completers did in the week after.
 - **AI & cost** — per action, model and household: cost, tokens, latency, refunds, failures, refusals; aisle-sort model calls.
 - **Credits & revenue** — credits used per plan with percentiles and ceiling hits; the trial funnel; invites blocked by seats; paying monthly / yearly / founders.
 - **Aisle cache** — the review queue.
-- **Settings** — Plan settings and Premium grants.
+- **Settings** — Plan settings, Premium grants, and the **access log** (who opened whose profile or recipe, and why).
+
+Looking at what people add is a legitimate interest, and the app says so on `/privacy` (linked from the homepage footer, sign-up and Account). Keep it proportionate: the aggregate panel first, a person's titles when you need them, a full recipe only with a reason.
 
 A **Monday email** to the admin addresses carries last week's key numbers with the week-on-week change. MRR everywhere is at the GBP list price (USD/EUR subscribers count as £3.99 / £29.99); Stripe is the source of truth for actual money.
 
