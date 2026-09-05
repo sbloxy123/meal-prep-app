@@ -1238,14 +1238,32 @@ async function countRecentUsage(householdId, action) {
 
 // One row per user per London day they made an authenticated request; the
 // basis for D1/D7/D30 retention. Idempotent, fire-and-forget.
-async function recordUserActivity(userId) {
+// hint = { standalone, platform } from the X-Fornetto-Client header
+// (lib/clientHint.js), or null. A standalone day marks the activity row and
+// stamps the user's first/latest home-screen use (migration 021) — that is the
+// whole "installed" signal on iOS.
+async function recordUserActivity(userId, hint = null) {
+    const standalone = Boolean(hint?.standalone);
+    const platform = hint?.platform ?? null;
     try {
         await pool.query(
-            `INSERT INTO user_activity (user_id, day)
-             VALUES ($1, (now() AT TIME ZONE 'Europe/London')::date)
-             ON CONFLICT DO NOTHING`,
-            [userId],
+            `INSERT INTO user_activity (user_id, day, standalone, platform)
+             VALUES ($1, (now() AT TIME ZONE 'Europe/London')::date, $2, $3)
+             ON CONFLICT (user_id, day) DO UPDATE
+                 SET standalone = user_activity.standalone OR EXCLUDED.standalone,
+                     platform   = COALESCE(user_activity.platform, EXCLUDED.platform)`,
+            [userId, standalone, platform],
         );
+        if (standalone) {
+            await pool.query(
+                `UPDATE "user"
+                 SET installed_at       = COALESCE(installed_at, now()),
+                     installed_platform = COALESCE(installed_platform, $2),
+                     last_standalone_at = now()
+                 WHERE id = $1`,
+                [userId, platform],
+            );
+        }
     } catch (error) {
         console.error("recordUserActivity failed:", error.message);
     }

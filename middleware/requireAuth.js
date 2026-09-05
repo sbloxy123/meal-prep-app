@@ -1,11 +1,14 @@
 const { auth } = require("../lib/auth");
 const { fromNodeHeaders } = require("better-auth/node");
 const { ensureHouseholdForUser, recordUserActivity } = require("../db/queries");
+const { clientHintFrom } = require("../lib/clientHint");
 
 // Which (user, London day) pairs this process has already written to
 // user_activity — so the retention log costs one INSERT per user per day, not
 // one per request. Process-local: a restart or a second instance just repeats
-// an idempotent insert.
+// an idempotent insert. The value carries whether that day has already been
+// marked as "used the installed app", so a browser visit followed by a
+// home-screen launch on the same day still gets written once more.
 const activitySeen = new Map();
 const ACTIVITY_MEMO_MAX = 5000;
 
@@ -13,12 +16,14 @@ function londonDay(now = new Date()) {
     return now.toLocaleDateString("en-CA", { timeZone: "Europe/London" }); // YYYY-MM-DD
 }
 
-function touchActivity(userId) {
+function touchActivity(userId, hint) {
     const day = londonDay();
-    if (activitySeen.get(userId) === day) return;
+    const standalone = Boolean(hint?.standalone);
+    const seen = activitySeen.get(userId);
+    if (seen && seen.day === day && (seen.standalone || !standalone)) return;
     if (activitySeen.size >= ACTIVITY_MEMO_MAX) activitySeen.clear();
-    activitySeen.set(userId, day);
-    recordUserActivity(userId); // fire-and-forget, swallows its own errors
+    activitySeen.set(userId, { day, standalone });
+    recordUserActivity(userId, hint); // fire-and-forget, swallows its own errors
 }
 
 async function requireAuth(req, res, next) {
@@ -34,7 +39,7 @@ async function requireAuth(req, res, next) {
             session.user.id,
             session.user.name,
         );
-        touchActivity(session.user.id);
+        touchActivity(session.user.id, clientHintFrom(req));
         next();
     } catch (error) {
         next(error);
