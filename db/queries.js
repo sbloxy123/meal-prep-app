@@ -899,6 +899,17 @@ async function getSuggestContext(householdId) {
     };
 }
 
+// For the app's one "chrome" fetch (GET /shopping-list): a solo household with
+// an invite already out shouldn't be nudged to invite someone.
+async function countPendingInvites(householdId) {
+    const { rows } = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM household_invite
+         WHERE household_id = $1 AND accepted_at IS NULL AND expires_at > now()`,
+        [householdId],
+    );
+    return rows[0].n;
+}
+
 async function getPendingInvites(householdId) {
     const { rows } = await pool.query(
         `SELECT id, invited_email, created_at, expires_at
@@ -1042,7 +1053,7 @@ async function acceptInvite(userId, token) {
 
         await client.query("UPDATE household_invite SET accepted_at = now() WHERE id = $1", [invite.id]);
         await client.query("COMMIT");
-        return { household_name: invite.household_name, alreadyMember: current === target };
+        return { household_name: invite.household_name, household_id: invite.household_id, alreadyMember: current === target };
     } catch (error) {
         await client.query("ROLLBACK");
         throw error;
@@ -1567,6 +1578,7 @@ module.exports = {
     setHouseholdDietaryRule,
     getSuggestContext,
     getPendingInvites,
+    countPendingInvites,
     createInvite,
     revokeInvite,
     acceptInvite,

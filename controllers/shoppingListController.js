@@ -49,7 +49,7 @@ async function createShoppingList(req, res, next) {
 async function getShoppingList(req, res, next) {
     try {
         const householdId = req.householdId;
-        const [shoppingList, allRecipesOnMenu, singleRecipeIngredients, singleRecipeTags, allTags, shoppingListIngredientsByRecipe, householdMemberCount, entitlement, onboarding] =
+        const [shoppingList, allRecipesOnMenu, singleRecipeIngredients, singleRecipeTags, allTags, shoppingListIngredientsByRecipe, householdMemberCount, entitlement, onboarding, householdPendingInvites] =
             await Promise.all([
                 db.getShoppingListItems(householdId),
                 db.allRecipesOnMenu(householdId),
@@ -60,6 +60,7 @@ async function getShoppingList(req, res, next) {
                 db.getHouseholdMemberCount(householdId),
                 db.getEntitlement(householdId),
                 db.getOnboardingState(householdId, req.user.id),
+                db.countPendingInvites(householdId),
             ]);
 
         // Strip the server-only fields before this goes to the browser.
@@ -73,6 +74,9 @@ async function getShoppingList(req, res, next) {
             allTags,
             shoppingListIngredientsByRecipe,
             householdMemberCount,
+            // Invites out but not yet accepted — with the member count, what the
+            // "shop together" nudge decides on (solo household, nobody invited).
+            householdPendingInvites,
             // Plan, trial and credits for the whole app to read (lib/credits.js
             // buildEntitlement shape).
             entitlement: publicEntitlement,

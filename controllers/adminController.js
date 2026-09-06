@@ -51,7 +51,7 @@ async function overview(req, res, next) {
         let days = parseInt(req.query.days, 10);
         if (!ALLOWED_DAYS.includes(days)) days = 30;
 
-        const [totalsRes, aiRes, invitesRes, macrosRes, tagsRes, deviceRes, onboardingRes, installRes, unverifiedRes, retentionRes, sizesRes] =
+        const [totalsRes, aiRes, invitesRes, macrosRes, tagsRes, deviceRes, onboardingRes, installRes, unverifiedRes, retentionRes, sizesRes, nudgeRes] =
             await Promise.all([
                 pool.query(`
                     SELECT
@@ -200,6 +200,25 @@ async function overview(req, res, next) {
                      FROM (SELECT household_id, COUNT(*) AS member_count
                            FROM household_member GROUP BY household_id) x
                      GROUP BY member_count ORDER BY member_count`,
+                ),
+                // "Shop together" nudge funnel + invite flow over the window.
+                pool.query(
+                    `SELECT
+                        COUNT(DISTINCT household_id) FILTER (WHERE type = 'household_nudge_shown')::int AS shown,
+                        COUNT(*) FILTER (WHERE type = 'household_nudge_outcome' AND meta->>'outcome' = 'invited')::int   AS invited,
+                        COUNT(*) FILTER (WHERE type = 'household_nudge_outcome' AND meta->>'outcome' = 'later')::int     AS later,
+                        COUNT(*) FILTER (WHERE type = 'household_nudge_outcome' AND meta->>'outcome' = 'never')::int     AS never,
+                        COUNT(*) FILTER (WHERE type = 'household_nudge_outcome' AND meta->>'outcome' = 'dismissed')::int AS dismissed,
+                        COUNT(*) FILTER (WHERE type = 'invite_sent')::int     AS invites_sent,
+                        COUNT(*) FILTER (WHERE type = 'invite_accepted')::int AS invites_accepted,
+                        (SELECT COUNT(*) FROM household h WHERE NOT EXISTS (
+                            SELECT 1 FROM household_member m WHERE m.household_id = h.id GROUP BY m.household_id HAVING COUNT(*) > 1)
+                          AND EXISTS (SELECT 1 FROM household_member m JOIN user_activity a ON a.user_id = m.user_id
+                                      WHERE m.household_id = h.id AND a.day > (now() AT TIME ZONE 'Europe/London')::date - $1::int))::int AS solo_active
+                     FROM app_events
+                     WHERE created_at >= now() - ($1::int || ' days')::interval
+                       AND type IN ('household_nudge_shown','household_nudge_outcome','invite_sent','invite_accepted')`,
+                    [days],
                 ),
             ]);
 
@@ -357,6 +376,16 @@ async function overview(req, res, next) {
                 invitesSent: inv.sent,
                 invitesAccepted: inv.accepted,
                 invitesPending: inv.pending,
+                householdNudge: {
+                    shown: nudgeRes.rows[0].shown,
+                    invited: nudgeRes.rows[0].invited,
+                    later: nudgeRes.rows[0].later,
+                    never: nudgeRes.rows[0].never,
+                    dismissed: nudgeRes.rows[0].dismissed,
+                    invitesSent: nudgeRes.rows[0].invites_sent,
+                    invitesAccepted: nudgeRes.rows[0].invites_accepted,
+                    soloActive: nudgeRes.rows[0].solo_active,
+                },
                 onboarding,
                 install,
                 macrosSource,
@@ -633,7 +662,7 @@ const HISTORY_COLUMNS = [
 const SUMMED = ["signups", "active_users", "ai_actions", "ai_rejected", "ai_credits", "ai_cost_pence", "aisle_actions", "aisle_model_calls",
     "lists_generated", "week_adds", "shops_finished", "recipes_created", "trials_started", "trials_converted", "trials_expired",
     "cancellations", "subscriptions_ended", "seat_hits", "cta_taps", "checkouts_started", "onboarding_shown", "onboarding_completed", "onboarding_skipped",
-    "standalone_active_users"];
+    "standalone_active_users", "invites_sent", "invites_accepted", "nudges_shown", "nudges_invited"];
 const STOCKS = ["users", "verified_users", "households", "multi_member_households", "premium_households", "paid_households", "comped_households",
     "subs_monthly", "subs_annual", "subs_founders", "mrr_pence", "recipes", "trials_active", "aisle_rows", "active_7d", "active_30d",
     "installed_users", "standalone_active_7d", "standalone_active_30d"];
