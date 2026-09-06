@@ -18,6 +18,8 @@ recipesRouter.post("/generate-from-title", recipeImportController.generateFromTi
 recipesRouter.post("/usuals", recipeImportController.generateUsuals);
 // "Give me inspiration" — N suggested recipe ideas (title/tags/ingredients).
 recipesRouter.post("/suggest", recipeImportController.suggestRecipes);
+// Save chosen ideas as full recipes (written on first add, then shared via the pool).
+recipesRouter.post("/suggest/add", recipeImportController.addSuggestions);
 recipesRouter.post("/estimate-macros", recipeImportController.estimateMacros);
 recipesRouter.post("/improve", recipeImportController.improveRecipe);
 // Social post (Instagram/TikTok/YouTube) URL or pasted caption → draft.

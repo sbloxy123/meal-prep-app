@@ -621,6 +621,40 @@ async function getGeneratedShoppingListItems(householdId) {
     return rows;
 }
 
+// ========= INSPIRATION POOL (migration 022) ========= //
+// Shared ideas per (key, diets). lib/suggestions/pool.js does the picking and
+// merging; these just read and write the row.
+
+async function readSuggestionPool(key, diets) {
+    const { rows } = await pool.query(
+        "SELECT id, ideas, usage_count, model_calls FROM suggestion_pool WHERE key = $1 AND diets = $2",
+        [key, diets],
+    );
+    return rows[0] ?? null;
+}
+
+// Insert or grow a pool. `ideas` is the full merged list (the caller merged);
+// model_calls counts taps that ran the model for this pool.
+async function upsertSuggestionPool(key, diets, hint, ideas, { modelCall = false } = {}) {
+    await pool.query(
+        `INSERT INTO suggestion_pool (key, hint, diets, ideas, source, model_calls)
+         VALUES ($1, $2, $3, $4::jsonb, 'model', $5)
+         ON CONFLICT (key, diets) DO UPDATE
+             SET ideas = EXCLUDED.ideas,
+                 hint = COALESCE(suggestion_pool.hint, EXCLUDED.hint),
+                 model_calls = suggestion_pool.model_calls + $5,
+                 updated_at = now()`,
+        [key, hint || null, diets, JSON.stringify(ideas), modelCall ? 1 : 0],
+    );
+}
+
+async function bumpSuggestionUsage(key, diets) {
+    await pool.query(
+        "UPDATE suggestion_pool SET usage_count = usage_count + 1, updated_at = now() WHERE key = $1 AND diets = $2",
+        [key, diets],
+    );
+}
+
 // ========= INGREDIENT → AISLE CACHE (migration 018) ========= //
 // Global, shared by every household. lib/ingredients/organise.js resolves a
 // list against it and asks the model only for the misses.
@@ -1579,6 +1613,9 @@ module.exports = {
     getSuggestContext,
     getPendingInvites,
     countPendingInvites,
+    readSuggestionPool,
+    upsertSuggestionPool,
+    bumpSuggestionUsage,
     createInvite,
     revokeInvite,
     acceptInvite,

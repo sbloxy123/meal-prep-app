@@ -1149,30 +1149,28 @@ async function generateUsuals(req, res, next) {
 
 // ---------- recipe inspiration (A2) ----------
 
-// Normalise one raw suggestion from the model into { title, tags[], ingredients[] }
-// of clean strings, or null if it hasn't got a usable title + ingredients.
-function normaliseSuggestion(raw) {
-    if (!raw || typeof raw !== "object") return null;
-    const title = typeof raw.title === "string" ? raw.title.trim() : "";
-    if (!title) return null;
+const { suggestKey, dietSignature } = require("../lib/suggestions/normalise");
+const { pick, merge, titleKey, SERVE_COUNT, POOL_SERVE_MIN } = require("../lib/suggestions/pool");
+const { suggestionPrompt, parseSuggestions } = require("../lib/suggestions/prompt");
+const { fullRecipePrompt, parseFullRecipe } = require("../lib/suggestions/write");
 
-    const toStrings = (value) =>
-        (Array.isArray(value) ? value : [])
-            .map((v) => (typeof v === "string" ? v : v?.name || ""))
-            .map((s) => s.replace(/\s+/g, " ").trim())
-            .filter(Boolean);
+const MAX_EXCLUDE = 100;
 
-    const ingredients = toStrings(raw.ingredients);
-    if (ingredients.length === 0) return null;
-
-    return { title, tags: toStrings(raw.tags), ingredients };
-}
-
+// Ideas are pooled globally by (normalised hint, household diet signature)
+// — migration 022, lib/suggestions/*. A tap on a pool that already holds
+// POOL_SERVE_MIN ideas is served from it (a random SERVE_COUNT the household
+// doesn't own) and runs no model; it still costs its credit. A miss runs the
+// model with the diets in the prompt and the pool's titles as "don't repeat",
+// merges the answer in, and serves it. The ledger meta carries `cached` so the
+// hit rate shows on the AI tab.
 async function suggestRecipes(req, res, next) {
     let ledger = null;
     try {
         const rawHint = typeof req.body?.hint === "string" ? req.body.hint.trim() : "";
         const hint = rawHint.slice(0, MAX_HINT_LEN);
+        const exclude = (Array.isArray(req.body?.exclude) ? req.body.exclude : [])
+            .filter((t) => typeof t === "string")
+            .slice(0, MAX_EXCLUDE);
 
         ledger = await startAiAction(req, res, {
             action: "suggest",
@@ -1182,60 +1180,175 @@ async function suggestRecipes(req, res, next) {
         });
         if (!ledger) return;
 
-        const steer = hint
-            ? `The user is after: "${hint}". Tailor every idea to that.`
-            : "Give a varied mix of crowd-pleasing everyday home dinners.";
+        const key = suggestKey(hint);
+        const diets = dietSignature(await db.getSuggestContext(req.householdId));
+        const existing = await db.readSuggestionPool(key, diets);
+        const poolIdeas = existing?.ideas ?? [];
 
-        const message = await runModel(ledger, {
-            model: AI_MODEL,
-            max_tokens: 1536,
-            messages: [
-                {
-                    role: "user",
-                    content: `You are a recipe idea generator. Suggest ${SUGGEST_COUNT} home-cooking recipe ideas.
-${steer}
-
-Return ONLY valid raw JSON (no markdown, no code fences) in EXACTLY this shape:
-{
-  "suggestions": [
-    { "title": string, "tags": [string], "ingredients": [string] }
-  ]
-}
-- "title" is the dish name (e.g. "Chicken katsu curry").
-- "tags" are 1-3 short collection labels a home cook would file it under (e.g. "Dinner", "Kids", "Vegetarian", "Quick"). Capitalise them.
-- "ingredients" are 5-10 plain ingredient names only — NO quantities, numbers or units (e.g. "chicken breast", "panko breadcrumbs", "curry sauce", "rice").
-Give ${SUGGEST_COUNT} distinct ideas.`,
-                },
-            ],
-        });
-
-        const raw = stripFences(message.content[0].text);
-        let data;
-        try {
-            data = JSON.parse(raw);
-        } catch {
-            try {
-                data = JSON.parse(jsonrepair(raw));
-            } catch {
-                await ledger.settle("failed", { errorCode: "unparseable" });
-                return res.status(400).json({ error: "Could not get ideas just now." });
-            }
+        if (poolIdeas.length >= POOL_SERVE_MIN) {
+            const suggestions = pick(poolIdeas, SERVE_COUNT, exclude).map(publicIdea);
+            await db.bumpSuggestionUsage(key, diets);
+            await ledger.settle("ok", { meta: { suggestions: suggestions.length, cached: true, pool: poolIdeas.length } });
+            return res.json({ suggestions });
         }
 
-        const list = Array.isArray(data?.suggestions)
-            ? data.suggestions
-            : Array.isArray(data)
-              ? data
-              : [];
-        const suggestions = list.map(normaliseSuggestion).filter(Boolean);
+        let fresh = [];
+        try {
+            const message = await runModel(ledger, {
+                model: AI_MODEL,
+                max_tokens: 1536,
+                messages: [
+                    {
+                        role: "user",
+                        content: suggestionPrompt({ hint, diets, count: SERVE_COUNT, avoid: poolIdeas.map((i) => i.title) }),
+                    },
+                ],
+            });
+            fresh = parseSuggestions(message.content[0].text);
+        } catch (error) {
+            // A pool with anything in it beats an error page; an empty one can't help.
+            if (poolIdeas.length === 0) {
+                if (error?.code === "unparseable") {
+                    await ledger.settle("failed", { errorCode: "unparseable" });
+                    return res.status(400).json({ error: "Could not get ideas just now." });
+                }
+                throw error;
+            }
+            const suggestions = pick(poolIdeas, SERVE_COUNT, exclude).map(publicIdea);
+            await db.bumpSuggestionUsage(key, diets);
+            await ledger.settle("ok", { meta: { suggestions: suggestions.length, cached: true, pool: poolIdeas.length, fallback: true } });
+            return res.json({ suggestions });
+        }
 
-        if (suggestions.length === 0) {
+        if (fresh.length === 0 && poolIdeas.length === 0) {
             await ledger.settle("refund", { outcome: "no_result" });
             return res.status(400).json({ error: "Could not get ideas just now." });
         }
 
-        await ledger.settle("ok", { meta: { suggestions: suggestions.length } });
+        const merged = merge(poolIdeas, fresh);
+        await db.upsertSuggestionPool(key, diets, hint, merged, { modelCall: true });
+        await db.bumpSuggestionUsage(key, diets);
+        // Prefer what the model just wrote; top up from the pool if it fell short.
+        const served = fresh.length >= SERVE_COUNT ? pick(fresh, SERVE_COUNT, exclude) : [...fresh, ...pick(poolIdeas, SERVE_COUNT - fresh.length, [...exclude, ...fresh.map((i) => i.title)])];
+        const suggestions = served.map(publicIdea);
+
+        await ledger.settle("ok", { meta: { suggestions: suggestions.length, cached: false, pool: merged.length } });
         res.json({ suggestions });
+    } catch (error) {
+        if (ledger) await ledger.fail(error);
+        next(error);
+    }
+}
+
+// What the client sees of a pool idea: the stored full recipe stays server-side;
+// `ready` says whether adding it will be free (written) or cost a credit.
+function publicIdea(idea) {
+    return { title: idea.title, tags: idea.tags ?? [], ingredients: idea.ingredients ?? [], ready: Boolean(idea.recipe) };
+}
+
+// A pool idea (+ its written recipe, if any) → the shape db.createRecipe wants.
+// Without a recipe it lands as the light stub Inspiration always made.
+function suggestionToCreateData(idea) {
+    const r = idea.recipe;
+    const ings = mapIngredients(r ? r.ingredients : idea.ingredients).slice(0, 40);
+    return {
+        recipe_title: String(idea.title).slice(0, 255),
+        recipe_description: r?.description ?? null,
+        recipe_instructions: r?.instructions ?? null,
+        recipe_link_url: null,
+        prep_time_minutes: r?.prep_time_minutes ?? null,
+        cook_time_minutes: r?.cook_time_minutes ?? null,
+        ingredient_name: ings.map((i) => i.name),
+        ingredient_quantity: ings.map(() => null),
+        ingredient_unit: ings.map(() => ""),
+        tags: (idea.tags ?? []).slice(0, 3),
+        image_url: null,
+        image_public_id: null,
+        servings: r?.servings ?? null,
+        calories: r?.calories ?? null,
+        protein_g: r?.protein_g ?? null,
+        carb_g: r?.carb_g ?? null,
+        fat_g: r?.fat_g ?? null,
+        macros_source: r && (r.calories != null || r.protein_g != null) ? "estimated" : null,
+    };
+}
+
+const WRITE_CONCURRENCY = 3;
+const WRITE_TIMEOUT_MS = 30_000;
+
+// POST /recipes/suggest/add { hint, titles[] } — save chosen ideas as real
+// recipes. An idea whose full recipe is already in the pool is free; one that
+// still needs writing runs the model (1 credit each, the "generate" action),
+// and the result is stored back on the pool idea so the next household gets
+// it free. Titles the pool no longer holds land as the old light stub.
+async function addSuggestions(req, res, next) {
+    let ledger = null;
+    try {
+        const rawHint = typeof req.body?.hint === "string" ? req.body.hint.trim() : "";
+        const hint = rawHint.slice(0, MAX_HINT_LEN);
+        const titles = (Array.isArray(req.body?.titles) ? req.body.titles : [])
+            .filter((t) => typeof t === "string" && t.trim())
+            .map((t) => t.trim().slice(0, 200))
+            .slice(0, SERVE_COUNT);
+        if (titles.length === 0) return res.status(400).json({ error: "Pick at least one idea." });
+
+        const key = suggestKey(hint);
+        const diets = dietSignature(await db.getSuggestContext(req.householdId));
+        const row = await db.readSuggestionPool(key, diets);
+        const ideas = row?.ideas ?? [];
+        const byTitle = new Map(ideas.map((i) => [titleKey(i.title), i]));
+        const chosen = titles.map((t) => byTitle.get(titleKey(t)) ?? { title: t, tags: [], ingredients: [], stub: true });
+        const toWrite = chosen.filter((i) => !i.stub && !i.recipe);
+
+        if (toWrite.length > 0) {
+            ledger = await startAiAction(req, res, {
+                action: "generate",
+                credits: toWrite.length,
+                burstLimit: GENERATE_LIMIT,
+                burstMessage: "Generation limit reached — 15 per 6 hours. Try again later.",
+                meta: { from: "inspiration", recipes: toWrite.length },
+            });
+            if (!ledger) return;
+
+            await runPool(toWrite, WRITE_CONCURRENCY, async (idea) => {
+                try {
+                    const message = await runModel(
+                        ledger,
+                        { model: AI_MODEL, max_tokens: 2048, messages: [{ role: "user", content: fullRecipePrompt({ title: idea.title, ingredients: idea.ingredients, diets }) }] },
+                        { timeout: WRITE_TIMEOUT_MS, maxRetries: 1 },
+                    );
+                    const recipe = parseFullRecipe(message.content[0].text);
+                    if (recipe) idea.recipe = recipe;
+                } catch {
+                    // Falls through as a stub; the credit for it is refunded below.
+                }
+            });
+
+            // Store the written recipes back on the pool (re-read first so a
+            // concurrent grow isn't clobbered).
+            const written = toWrite.filter((i) => i.recipe);
+            if (written.length > 0) {
+                const latest = (await db.readSuggestionPool(key, diets))?.ideas ?? ideas;
+                const writtenBy = new Map(written.map((i) => [titleKey(i.title), i.recipe]));
+                const updated = latest.map((i) => (i.recipe || !writtenBy.has(titleKey(i.title)) ? i : { ...i, recipe: writtenBy.get(titleKey(i.title)) }));
+                await db.upsertSuggestionPool(key, diets, hint, updated);
+            }
+            const failed = toWrite.length - written.length;
+            if (written.length === 0) await ledger.settle("refund", { outcome: "no_recipe", meta: { from: "inspiration", failed } });
+            else await ledger.settle("ok", { credits: written.length, meta: { from: "inspiration", written: written.length, failed } });
+        }
+
+        const created = [];
+        for (const idea of chosen) {
+            const id = await db.createRecipe(suggestionToCreateData(idea), req.householdId, req.user.id);
+            db.recordEvent("recipe_created", {
+                userId: req.user.id,
+                householdId: req.householdId,
+                meta: { recipe_id: id ?? null, source: "suggest" },
+            });
+            created.push({ id: id ?? null, title: idea.title, written: Boolean(idea.recipe) });
+        }
+        res.status(201).json({ created, written: created.filter((c) => c.written).length });
     } catch (error) {
         if (ledger) await ledger.fail(error);
         next(error);
@@ -1707,6 +1820,7 @@ module.exports = {
     generateFromTitle,
     generateUsuals,
     suggestRecipes,
+    addSuggestions,
     parseFromPhoto,
     importSocial,
 };

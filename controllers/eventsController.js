@@ -68,6 +68,7 @@ function cleanMeta(type, raw) {
         set("diets", list(m.diets, DIETS));
     }
     if (type === "onboarding_usuals_typed") set("dishes", num(m.dishes));
+    if (type === "onboarding_usuals_typed") set("tapped", num(m.tapped)); // dishes added by chip, not typed
     if (type === "onboarding_completed") {
         set("offered", num(m.offered));
         set("chosen", num(m.chosen));
