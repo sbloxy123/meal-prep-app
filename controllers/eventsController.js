@@ -39,6 +39,11 @@ const ALLOWED = new Set([
     // Just before Stripe Checkout opens: which interval, whether the founders'
     // coupon applied, and which CTA brought them to /premium (`from`).
     "checkout_started",
+    // The "shop together" sheet for solo households (first open of the aisle
+    // list): shown once per open, then one outcome (invited | later | never |
+    // dismissed). invite_sent / invite_accepted are written server-side.
+    "household_nudge_shown",
+    "household_nudge_outcome",
 ]);
 
 const { alertNewIosMajor } = require("../lib/install");
@@ -94,6 +99,11 @@ function cleanMeta(type, raw) {
         set("interval", m.interval === "year" ? "year" : "month");
         set("founders", m.founders === true);
         set("from", str(m.from, 40));
+    }
+    if (type === "household_nudge_shown") set("source", str(m.source, 20));
+    if (type === "household_nudge_outcome") {
+        set("source", str(m.source, 20));
+        set("outcome", ["invited", "later", "never", "dismissed"].includes(m.outcome) ? m.outcome : undefined);
     }
     // How long the questionnaire took, shown → done (ms).
     if (type === "onboarding_completed" || type === "onboarding_skipped") set("ms", num(m.ms));

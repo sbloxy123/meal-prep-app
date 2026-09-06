@@ -105,6 +105,11 @@ async function inviteMember(req, res, next) {
         const token = crypto.randomBytes(24).toString("base64url");
         const expiresAt = new Date(Date.now() + INVITE_TTL_DAYS * 86400000);
         await db.createInvite(req.householdId, email, req.user.id, token, expiresAt);
+        db.recordEvent("invite_sent", {
+            userId: req.user.id,
+            householdId: req.householdId,
+            meta: { seats: seat.seats + 1, limit: seat.limit, plan: entitlement.plan },
+        });
 
         const household = await db.getHouseholdById(req.householdId);
         const householdName = household?.name || "their kitchen";
@@ -132,7 +137,11 @@ async function acceptInvite(req, res, next) {
         const token = typeof req.body.token === "string" ? req.body.token : "";
         if (!token) return res.status(400).json({ error: "Missing invite token." });
         const result = await db.acceptInvite(req.user.id, token);
-        res.json({ success: true, ...result });
+        if (!result.alreadyMember) {
+            db.recordEvent("invite_accepted", { userId: req.user.id, householdId: result.household_id ?? null });
+        }
+        const { household_id: _hid, ...publicResult } = result;
+        res.json({ success: true, ...publicResult });
     } catch (error) {
         next(error);
     }
@@ -141,6 +150,7 @@ async function acceptInvite(req, res, next) {
 async function leaveHousehold(req, res, next) {
     try {
         await db.leaveHousehold(req.user.id, req.user.name);
+        db.recordEvent("member_left", { userId: req.user.id, householdId: req.householdId });
         res.json({ success: true });
     } catch (error) {
         next(error);
@@ -156,6 +166,7 @@ async function removeMember(req, res, next) {
             return res.status(400).json({ error: "Use ‘Leave household’ to remove yourself." });
         }
         await db.removeMember(req.householdId, req.params.userId);
+        db.recordEvent("member_removed", { userId: req.user.id, householdId: req.householdId });
         res.json({ success: true });
     } catch (error) {
         next(error);
@@ -243,6 +254,7 @@ async function revokeInvite(req, res, next) {
             return res.status(403).json({ error: "Only the household owner can revoke invites." });
         }
         await db.revokeInvite(req.householdId, req.params.inviteId);
+        db.recordEvent("invite_revoked", { userId: req.user.id, householdId: req.householdId });
         res.json({ success: true });
     } catch (error) {
         next(error);
