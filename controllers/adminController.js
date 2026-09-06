@@ -497,7 +497,7 @@ async function aiStats(req, res, next) {
         let days = parseInt(req.query.days, 10);
         if (!ALLOWED_DAYS.includes(days)) days = 30;
 
-        const [byActionRes, byModelRes, outcomesRes, householdsRes, dailyRes, legacyRes] = await Promise.all([
+        const [byActionRes, byModelRes, outcomesRes, householdsRes, dailyRes, legacyRes, poolRes] = await Promise.all([
             pool.query(
                 `SELECT action,
                         COUNT(*) FILTER (WHERE status <> 'rejected')::int                         AS actions,
@@ -579,6 +579,16 @@ async function aiStats(req, res, next) {
                    AND meta ? 'legacy'`,
                 [days],
             ),
+            // Inspiration: taps served from the shared pool vs taps that ran the model.
+            pool.query(
+                `SELECT COUNT(*) FILTER (WHERE status = 'ok')::int AS served,
+                        COUNT(*) FILTER (WHERE status = 'ok' AND meta->>'cached' = 'true')::int AS from_pool,
+                        (SELECT COUNT(*) FROM suggestion_pool)::int AS pools,
+                        (SELECT COALESCE(SUM(jsonb_array_length(ideas)), 0) FROM suggestion_pool)::int AS ideas
+                 FROM ai_usage
+                 WHERE action = 'suggest' AND created_at >= now() - ($1::int || ' days')::interval`,
+                [days],
+            ),
         ]);
 
         const num = (v) => (v == null ? null : Number(v));
@@ -619,6 +629,12 @@ async function aiStats(req, res, next) {
             days,
             totals,
             byAction,
+            suggestPool: {
+                served: poolRes.rows[0].served,
+                fromPool: poolRes.rows[0].from_pool,
+                pools: poolRes.rows[0].pools,
+                ideas: poolRes.rows[0].ideas,
+            },
             byModel: byModelRes.rows.map((r) => ({
                 model: r.model,
                 actions: Number(r.actions),

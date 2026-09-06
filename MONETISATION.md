@@ -73,6 +73,10 @@ Every household carries a snapshot of the plan rules taken when it was created: 
 | Comps | Back of house → Premium grants |
 | AI model prices and the USD→GBP rate for cost reporting | Code (`lib/aiCost.js`; `AI_USD_TO_GBP` env) |
 
+## Inspiration costs less as it is used
+
+Inspiration ideas are pooled globally by what was asked for and the household's diets. Once a pool holds twelve ideas a tap is served from it with no model call — the user still spends a credit, so the value story is unchanged, but our cost per tap falls towards zero as the pool fills. Adding an idea creates a full recipe (ingredients with quantities, numbered method, macros): free when the pool already holds the written recipe, one credit when it has to be written, and every written recipe is shared back into the pool. Fifty common searches (and their vegetarian and vegan variants) are seeded on deploy with recipes already written, so the feature has depth from the first day. The AI tab shows the share of taps served from the pool.
+
 ## What the dashboard tells you
 
 Back of house (`/back-of-house`, linked from the rail and Account for admin accounts) is organised in tabs:
